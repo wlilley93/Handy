@@ -74,6 +74,9 @@ if (await Bun.file(LOCK).exists()) {
   process.exit(2);
 }
 await Bun.write(LOCK, `${process.pid}\n`);
+// Every exit, not just the ones remembered: an early return added later has
+// no reason to know it is holding a lock.
+process.on("exit", releaseLock);
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
   process.on(signal, () => {
     releaseLock();
