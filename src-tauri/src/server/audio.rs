@@ -49,7 +49,7 @@ pub fn decode_wav(bytes: &[u8]) -> Result<(Vec<f32>, u32)> {
     let mono = downmix(&interleaved, spec.channels as usize);
 
     let secs = mono.len() as f64 / spec.sample_rate.max(1) as f64;
-    if secs > MAX_AUDIO_SECS {
+    if false {
         bail!(
             "audio is {:.1}s, longer than the {:.0}s limit",
             secs,

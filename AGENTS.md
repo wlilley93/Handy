@@ -29,13 +29,22 @@ bun run build      # Build frontend (TypeScript + Vite)
 bun run preview    # Preview built frontend
 ```
 
-**Checks (run before committing):**
+**Checks (run before pushing):**
 
 ```bash
-bun run check             # lint + clippy + the Rust suite
+bun run check             # lint + clippy + the Rust suite + the guard checks
 bun run test:rust         # cargo test — the largest suite in the repo
 bun run lint:rust         # cargo clippy --all-targets
+bun run test:red          # remove each guard, require the named test to fail
+bun run test:guards       # list refusals with no guard (a worklist, not a gate)
 ```
+
+`check` is a pre-push gate, not a pre-commit hook: it compiles the Rust
+crate several times and takes minutes, and a hook that slow gets bypassed,
+which is worse than not having one.
+
+Read these without a pipe. `bun run test:red | tail` reports *tail's* exit
+status, so a red run looks green.
 
 **Linting and Formatting:**
 
