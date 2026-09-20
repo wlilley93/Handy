@@ -29,7 +29,15 @@ bun run build      # Build frontend (TypeScript + Vite)
 bun run preview    # Preview built frontend
 ```
 
-**Linting and Formatting (run before committing):**
+**Checks (run before committing):**
+
+```bash
+bun run check             # lint + clippy + the Rust suite
+bun run test:rust         # cargo test — the largest suite in the repo
+bun run lint:rust         # cargo clippy --all-targets
+```
+
+**Linting and Formatting:**
 
 ```bash
 bun run lint              # ESLint for frontend
