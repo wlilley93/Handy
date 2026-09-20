@@ -60,4 +60,14 @@ pub struct CliArgs {
     /// Emit --transcribe-file results as JSON.
     #[arg(long)]
     pub json: bool,
+
+    /// Run the local transcription API headlessly and stay up: no window, no
+    /// tray, no mic, no overlay. Serves the same endpoints the in-app server
+    /// does, against the same engine and the selected model.
+    #[arg(long)]
+    pub serve: bool,
+
+    /// Port for --serve (default: the `server_port` setting, 8915).
+    #[arg(long, value_name = "PORT")]
+    pub serve_port: Option<u16>,
 }
