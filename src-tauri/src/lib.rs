@@ -785,7 +785,7 @@ pub fn run(cli_args: CliArgs) {
             Typescript::default().bigint(BigIntExportBehavior::Number),
             "../src/bindings.ts",
         )
-        .expect("Failed to export typescript bindings");
+        .unwrap_or_else(|e| eprintln!("warn: typescript bindings export skipped: {e}"));
 
     let invoke_handler = specta_builder.invoke_handler();
 
