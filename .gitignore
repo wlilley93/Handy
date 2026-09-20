@@ -45,3 +45,7 @@ result
 
 # Python bytecode (scripts/)
 __pycache__/
+
+# A red run disables production code while it works; committing then
+# commits a disabled guard.
+.red-running
