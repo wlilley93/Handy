@@ -72,12 +72,138 @@ impl ServerConfig {
     }
 }
 
+/// What the HTTP layer needs from the application around it.
+///
+/// `ServerState` held a Tauri `AppHandle` directly, which made `router()`
+/// impossible to build outside a running app — so every status path in
+/// `routes.rs` was unreachable by a test, and `guard-coverage` reports 14 of
+/// them as unexercised. This is the seam: production passes the app, a test
+/// passes a fake. `show_overlay` was already half of this admission, since
+/// headless mode has no window.
+pub trait ServerHost: Send + Sync + 'static {
+    fn settings(&self) -> crate::settings::AppSettings;
+    fn models(&self) -> Arc<dyn Models>;
+    fn show_transcribing_overlay(&self);
+    fn show_streaming_overlay(&self);
+    fn hide_recording_overlay(&self);
+    /// Returns the listener id to hand back to `unlisten`.
+    fn listen_stream_text(
+        &self,
+        on: Box<dyn Fn(crate::managers::transcription::StreamTextEvent) + Send + Sync + 'static>,
+    ) -> u32;
+    fn unlisten(&self, id: u32);
+}
+
+/// The production host: everything routed through the Tauri app handle.
+pub struct TauriHost(pub AppHandle);
+
+impl ServerHost for TauriHost {
+    fn settings(&self) -> crate::settings::AppSettings {
+        get_settings(&self.0)
+    }
+    fn models(&self) -> Arc<dyn Models> {
+        Arc::clone(&self.0.state::<Arc<crate::managers::model::ModelManager>>()) as Arc<dyn Models>
+    }
+    fn show_transcribing_overlay(&self) {
+        crate::overlay::show_transcribing_overlay(&self.0);
+    }
+    fn show_streaming_overlay(&self) {
+        crate::overlay::show_streaming_overlay(&self.0);
+    }
+    fn hide_recording_overlay(&self) {
+        crate::overlay::hide_recording_overlay(&self.0);
+    }
+    fn listen_stream_text(
+        &self,
+        on: Box<dyn Fn(crate::managers::transcription::StreamTextEvent) + Send + Sync + 'static>,
+    ) -> u32 {
+        use tauri_specta::Event;
+        crate::managers::transcription::StreamTextEvent::listen(&self.0, move |event| {
+            on(event.payload)
+        })
+    }
+    fn unlisten(&self, id: u32) {
+        use tauri::Listener;
+        self.0.unlisten(id);
+    }
+}
+
+/// The model catalogue, as the HTTP layer uses it.
+///
+/// The third and last of these seams. `ModelManager` is reached through the
+/// Tauri state map, so holding it concretely kept the stream route untestable
+/// even after the host and the engine were abstracted: `stream()` looks the
+/// model up before it checks the sample rate, the dialect, or whether another
+/// stream is already open, so every refusal after that point was unreachable.
+pub trait Models: Send + Sync + 'static {
+    fn available(&self) -> Vec<crate::managers::model::ModelInfo>;
+    fn info(&self, model_id: &str) -> Option<crate::managers::model::ModelInfo>;
+}
+
+impl Models for crate::managers::model::ModelManager {
+    fn available(&self) -> Vec<crate::managers::model::ModelInfo> {
+        self.get_available_models()
+    }
+    fn info(&self, model_id: &str) -> Option<crate::managers::model::ModelInfo> {
+        self.get_model_info(model_id)
+    }
+}
+
+/// The transcription engine, as the HTTP layer uses it.
+///
+/// The second half of the same seam as [`ServerHost`]: `TranscriptionManager`
+/// is built from an `AppHandle` too, so holding it concretely kept
+/// `ServerState` unconstructible even after the host was abstracted. These are
+/// the eight methods `routes.rs` actually calls — a narrower surface than the
+/// manager's, which is the point of naming it.
+pub trait Transcriber: Send + Sync + 'static {
+    fn is_model_loaded(&self) -> bool;
+    fn initiate_model_load(&self);
+    fn current_backend(&self) -> Option<String>;
+    fn stream_router(&self) -> Arc<crate::managers::transcription::StreamRouter>;
+    fn start_stream(&self);
+    fn cancel_stream(&self);
+    fn finalize_stream(&self) -> Result<Option<String>>;
+    fn transcribe(&self, audio: Vec<f32>) -> Result<String>;
+    fn load_model(&self, model_id: &str) -> Result<()>;
+}
+
+impl Transcriber for TranscriptionManager {
+    fn is_model_loaded(&self) -> bool {
+        TranscriptionManager::is_model_loaded(self)
+    }
+    fn initiate_model_load(&self) {
+        TranscriptionManager::initiate_model_load(self)
+    }
+    fn current_backend(&self) -> Option<String> {
+        TranscriptionManager::current_backend(self)
+    }
+    fn stream_router(&self) -> Arc<crate::managers::transcription::StreamRouter> {
+        TranscriptionManager::stream_router(self)
+    }
+    fn start_stream(&self) {
+        TranscriptionManager::start_stream(self)
+    }
+    fn cancel_stream(&self) {
+        TranscriptionManager::cancel_stream(self)
+    }
+    fn finalize_stream(&self) -> Result<Option<String>> {
+        TranscriptionManager::finalize_stream(self)
+    }
+    fn transcribe(&self, audio: Vec<f32>) -> Result<String> {
+        TranscriptionManager::transcribe(self, audio)
+    }
+    fn load_model(&self, model_id: &str) -> Result<()> {
+        TranscriptionManager::load_model(self, model_id)
+    }
+}
+
 /// Everything a handler needs. Cloned per request; the expensive parts are
 /// behind `Arc`.
 #[derive(Clone)]
 pub struct ServerState {
-    pub app: AppHandle,
-    pub transcription: Arc<TranscriptionManager>,
+    pub host: Arc<dyn ServerHost>,
+    pub transcription: Arc<dyn Transcriber>,
     pub token: Option<String>,
     /// Drive the recording overlay for server-triggered work. False when the
     /// app runs headless (`--serve`), where no overlay window exists.
@@ -140,7 +266,7 @@ pub async fn start(
 
     let transcription = app.state::<Arc<TranscriptionManager>>().inner().clone();
     let state = ServerState {
-        app: app.clone(),
+        host: Arc::new(TauriHost(app.clone())),
         transcription,
         token: config.token.clone(),
         show_overlay,
@@ -256,3 +382,4 @@ mod tests {
         assert!(ServerConfig::resolve(0, None, false).is_err());
     }
 }
+
