@@ -98,9 +98,31 @@ function reached(site: Site): boolean {
 }
 
 const unreached = sites.filter(site => !reached(site));
+const reachedSites = sites.filter(site => reached(site));
+
+// A heuristic that quietly returns zero is worse than no heuristic. Three
+// versions of this reported 0/21, 0/22 and 2/22 before it worked, and the only
+// thing that caught them was knowing these guards are tested — `red.ts` proves
+// each of them by deleting it and watching the named test fail. So the tool
+// asserts its own floor: if it can no longer see these, it is broken, not the
+// module.
+const MUST_BE_REACHED = [
+  "without a token",
+  "longer than",
+  "sample_rate must be",
+];
+const blind = MUST_BE_REACHED.filter(
+  fragment => !reachedSites.some(site => site.text.includes(fragment)),
+);
+if (blind.length) {
+  console.error("guard-coverage is broken: it cannot see guards red.ts proves are tested:");
+  for (const fragment of blind) console.error(`  ${fragment}`);
+  process.exit(2);
+}
+
 for (const site of unreached) {
   console.log(`  ?     ${site.file}:${site.line}  ${site.kind}  ${site.text}`);
 }
 console.log(
-  `\n${sites.length - unreached.length}/${sites.length} refusal sites are mentioned by a test`,
+  `\n${reachedSites.length}/${sites.length} refusal sites are mentioned by a test`,
 );
