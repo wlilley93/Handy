@@ -28,7 +28,7 @@ use crate::managers::transcription::StreamTextEvent;
 
 /// Largest upload accepted. Generous enough for ten minutes of 44.1 kHz stereo
 /// WAV, which is what `MAX_AUDIO_SECS` allows once decoded.
-const MAX_UPLOAD_BYTES: usize = 128 * 1024 * 1024;
+pub(super) const MAX_UPLOAD_BYTES: usize = 128 * 1024 * 1024;
 
 pub fn router(state: ServerState) -> Router {
     Router::new()
@@ -204,6 +204,27 @@ async fn transcriptions(
     multipart: Multipart,
 ) -> Result<Response, ApiError> {
     check_auth(&state, &headers, None)?;
+
+    // Say "too big" when it is too big. `DefaultBodyLimit` counts bytes as it
+    // reads, and its rejection surfaces as a multipart parse error — so an
+    // oversized upload was answered "could not read the multipart body",
+    // which sends the caller looking for a malformed request. A client that
+    // declares its length gets a straight answer here; the read limit stays
+    // as the backstop for one that does not, or lies.
+    if let Some(declared) = headers
+        .get("content-length")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<usize>().ok())
+    {
+        if declared > MAX_UPLOAD_BYTES {
+            return Err(ApiError::new(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!(
+                    "upload is {declared} bytes, over the {MAX_UPLOAD_BYTES} byte limit"
+                ),
+            ));
+        }
+    }
 
     let req = read_multipart(multipart).await?;
     let bytes = req
@@ -421,7 +442,7 @@ const MODEL_LOAD_WAIT: std::time::Duration = std::time::Duration::from_secs(90);
 /// Polling rather than a condvar because `TranscriptionManager` exposes the
 /// loading state as a bool, and reaching into its internals from the server
 /// would couple the two; the wait happens once per session, off the hot path.
-async fn wait_for_model(state: &ServerState, limit: std::time::Duration) -> bool {
+pub(super) async fn wait_for_model(state: &ServerState, limit: std::time::Duration) -> bool {
     let deadline = std::time::Instant::now() + limit;
     loop {
         if state.transcription.is_model_loaded() {
@@ -478,13 +499,25 @@ fn parse_codex_frame(text: &str) -> ClientFrame {
     };
     match value.get("type").and_then(|t| t.as_str()) {
         Some("session.start") => {
-            // 16 kHz is the engine's own rate, and the right assumption when a
-            // client opens a session without stating one.
-            let rate = value
+            // `config.sample_rate_hz` is required by the dialect, so a frame
+            // without it is refused rather than assumed.
+            //
+            // Assuming 16 kHz was the previous behaviour and it fails
+            // silently: a client sending 24 kHz audio had it read as 16 kHz,
+            // never resampled, and transcribed slightly wrong — measured, the
+            // same clip came back "dog Pack my box" instead of "dog. Pack my
+            // box". OpenCodex's relay rejects such a frame outright, so no
+            // real client sends one; the only thing this leniency bought was a
+            // way to be quietly wrong.
+            let Some(rate) = value
                 .get("config")
                 .and_then(|c| c.get("sample_rate_hz"))
                 .and_then(|r| r.as_u64())
-                .unwrap_or(TARGET_HZ as u64);
+            else {
+                return ClientFrame::Bad(
+                    "session.start needs config.sample_rate_hz — see LOCAL_API.md".into(),
+                );
+            };
             if !(8_000..=192_000).contains(&rate) {
                 return ClientFrame::Bad(format!("sample_rate_hz {rate} is outside 8000-192000"));
             }
@@ -812,10 +845,13 @@ mod tests {
     }
 
     #[test]
-    fn codex_session_start_without_a_rate_falls_back_to_the_engine_rate() {
-        assert_eq!(
-            parse_codex_frame(r#"{"type":"session.start","config":{}}"#),
-            ClientFrame::Start(TARGET_HZ)
+    fn codex_session_start_without_a_rate_is_refused() {
+        // Not defaulted: sending 24 kHz audio into a session read as 16 kHz
+        // transcribes slightly wrong and says nothing.
+        let frame = parse_codex_frame(r#"{"type":"session.start"}"#);
+        assert!(
+            matches!(&frame, ClientFrame::Bad(m) if m.contains("sample_rate_hz")),
+            "got {frame:?}"
         );
     }
 

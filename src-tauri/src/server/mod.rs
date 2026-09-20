@@ -383,3 +383,5 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+mod http_tests;

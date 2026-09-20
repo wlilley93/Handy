@@ -2625,6 +2625,7 @@ dependencies = [
  "tauri-specta",
  "tempfile",
  "tokio",
+ "tower",
  "transcribe-cpp",
  "transcribe-rs",
  "vad-rs",
