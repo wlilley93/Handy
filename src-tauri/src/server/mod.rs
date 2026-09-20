@@ -82,7 +82,7 @@ impl ServerConfig {
 /// headless mode has no window.
 pub trait ServerHost: Send + Sync + 'static {
     fn settings(&self) -> crate::settings::AppSettings;
-    fn models(&self) -> Arc<crate::managers::model::ModelManager>;
+    fn models(&self) -> Arc<dyn Models>;
     fn show_transcribing_overlay(&self);
     fn show_streaming_overlay(&self);
     fn hide_recording_overlay(&self);
@@ -101,8 +101,8 @@ impl ServerHost for TauriHost {
     fn settings(&self) -> crate::settings::AppSettings {
         get_settings(&self.0)
     }
-    fn models(&self) -> Arc<crate::managers::model::ModelManager> {
-        Arc::clone(&self.0.state::<Arc<crate::managers::model::ModelManager>>())
+    fn models(&self) -> Arc<dyn Models> {
+        Arc::clone(&self.0.state::<Arc<crate::managers::model::ModelManager>>()) as Arc<dyn Models>
     }
     fn show_transcribing_overlay(&self) {
         crate::overlay::show_transcribing_overlay(&self.0);
@@ -125,6 +125,27 @@ impl ServerHost for TauriHost {
     fn unlisten(&self, id: u32) {
         use tauri::Listener;
         self.0.unlisten(id);
+    }
+}
+
+/// The model catalogue, as the HTTP layer uses it.
+///
+/// The third and last of these seams. `ModelManager` is reached through the
+/// Tauri state map, so holding it concretely kept the stream route untestable
+/// even after the host and the engine were abstracted: `stream()` looks the
+/// model up before it checks the sample rate, the dialect, or whether another
+/// stream is already open, so every refusal after that point was unreachable.
+pub trait Models: Send + Sync + 'static {
+    fn available(&self) -> Vec<crate::managers::model::ModelInfo>;
+    fn info(&self, model_id: &str) -> Option<crate::managers::model::ModelInfo>;
+}
+
+impl Models for crate::managers::model::ModelManager {
+    fn available(&self) -> Vec<crate::managers::model::ModelInfo> {
+        self.get_available_models()
+    }
+    fn info(&self, model_id: &str) -> Option<crate::managers::model::ModelInfo> {
+        self.get_model_info(model_id)
     }
 }
 

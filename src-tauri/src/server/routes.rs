@@ -45,8 +45,8 @@ pub fn router(state: ServerState) -> Router {
 /// An error the client should see, with the status it maps to. Internal detail
 /// (paths, engine internals) never reaches here — the message is the one the
 /// caller can act on.
-struct ApiError {
-    status: StatusCode,
+pub(super) struct ApiError {
+    pub(super) status: StatusCode,
     message: String,
 }
 
@@ -176,7 +176,7 @@ async fn list_models(
     check_auth(&state, &headers, None)?;
     let manager = state.host.models();
     let rows: Vec<ModelRow> = manager
-        .get_available_models()
+        .available()
         .into_iter()
         .map(|m| ModelRow {
             id: m.id,
@@ -334,41 +334,37 @@ async fn run_transcription(
 // ---------------------------------------------------------------- stream
 
 #[derive(Deserialize)]
-struct StreamParams {
+pub(super) struct StreamParams {
     /// Sample rate of the PCM16 frames the client will send. Defaults to the
     /// engine's own rate. In the Codex dialect `session.start` supplies it
     /// instead, and wins.
     #[serde(default)]
-    sample_rate: Option<usize>,
+    pub(super) sample_rate: Option<usize>,
     /// WebSocket clients cannot set an Authorization header from a browser, so
     /// the token is accepted here too.
     #[serde(default)]
-    token: Option<String>,
+    pub(super) token: Option<String>,
     /// `codex` selects the OpenCodex dictation dialect. Omitted means native.
     /// Stated in the URL rather than sniffed, because the two dialects differ
     /// on who speaks first: a native client waits for `ready` on connect, a
     /// Codex client sends `session.start` and waits for `session.started`. A
     /// socket that guessed would deadlock one of them.
     #[serde(default)]
-    dialect: Option<String>,
+    pub(super) dialect: Option<String>,
 }
 
-async fn stream(
-    State(state): State<ServerState>,
-    headers: HeaderMap,
-    Query(params): Query<StreamParams>,
-    ws: WebSocketUpgrade,
-) -> Result<Response, ApiError> {
-    check_auth(&state, &headers, params.token.as_deref())?;
-
-    let model_id = state.host.settings().selected_model;
-    let streams = state
-        .host
-        .models()
-        .get_model_info(&model_id)
-        .map(|m| m.supports_streaming)
-        .unwrap_or(false);
-    if !streams {
+/// What a stream request must satisfy before the socket is upgraded.
+///
+/// Pure, and separate from the handler on purpose: `WebSocketUpgrade` runs as
+/// an extractor, so it rejects a non-upgrade request with 426 *before* any
+/// handler body executes. Every refusal below was therefore unreachable by a
+/// test while it lived inside `stream()` — not hard to reach, impossible.
+pub(super) fn validate_stream(
+    model_id: &str,
+    supports_streaming: bool,
+    params: &StreamParams,
+) -> Result<(usize, Dialect), ApiError> {
+    if !supports_streaming {
         // Failing here, before the upgrade, gives the client an HTTP status it
         // can read. A close frame after a successful upgrade is far easier to
         // mistake for a network problem.
@@ -394,6 +390,25 @@ async fn stream(
             )))
         }
     };
+    Ok((rate, dialect))
+}
+
+async fn stream(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Query(params): Query<StreamParams>,
+    ws: WebSocketUpgrade,
+) -> Result<Response, ApiError> {
+    check_auth(&state, &headers, params.token.as_deref())?;
+
+    let model_id = state.host.settings().selected_model;
+    let streams = state
+        .host
+        .models()
+        .info(&model_id)
+        .map(|m| m.supports_streaming)
+        .unwrap_or(false);
+    let (rate, dialect) = validate_stream(&model_id, streams, &params)?;
     Ok(ws.on_upgrade(move |socket| run_stream(socket, state, rate, dialect)))
 }
 
@@ -435,7 +450,7 @@ async fn wait_for_model(state: &ServerState, limit: std::time::Duration) -> bool
 /// The dialect is decided by the first frame and never changes after: a binary
 /// frame means Native, a `session.start` text frame means Codex.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Dialect {
+pub(super) enum Dialect {
     Native,
     Codex,
 }

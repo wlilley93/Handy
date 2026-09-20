@@ -103,6 +103,20 @@ const GUARDS: Guard[] = [
     to: "    if false {",
     expect: "rejects_odd_length_pcm16",
   },
+  {
+    name: "a model that cannot stream is refused with 409",
+    file: "src-tauri/src/server/routes.rs",
+    from: "    if !supports_streaming {",
+    to: "    if false {",
+    expect: "a_model_that_cannot_stream_is_refused_with_conflict",
+  },
+  {
+    name: "a zero sample rate is refused",
+    file: "src-tauri/src/server/routes.rs",
+    from: "    if rate == 0 {",
+    to: "    if false {",
+    expect: "a_zero_sample_rate_is_refused",
+  },
 ];
 
 async function runSuite(): Promise<{ ok: boolean; output: string }> {

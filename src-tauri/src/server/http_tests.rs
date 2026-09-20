@@ -19,14 +19,62 @@ use tower::ServiceExt;
 #[derive(Default)]
 struct FakeHost {
     overlay: StdMutex<Vec<&'static str>>,
+    /// Whether the catalogue says the selected model can stream. The stream
+    /// route refuses before the upgrade when it cannot.
+    streaming_model: bool,
+}
+
+/// A one-entry catalogue naming whatever the default settings select, so the
+/// lookup in `stream()` finds it.
+struct FakeModels {
+    streaming: bool,
+}
+
+fn fake_model(id: &str, streaming: bool) -> crate::managers::model::ModelInfo {
+    crate::managers::model::ModelInfo {
+        id: id.to_string(),
+        name: id.to_string(),
+        description: String::new(),
+        filename: String::new(),
+        source: crate::managers::model::ModelSource::Url {
+            url: String::new(),
+            sha256: None,
+        },
+        size_mb: 0,
+        is_downloaded: true,
+        is_downloading: false,
+        partial_size: 0,
+        is_directory: false,
+        engine_type: crate::managers::model::EngineType::TranscribeCpp,
+        accuracy_score: 0.0,
+        speed_score: 0.0,
+        supports_translation: false,
+        is_recommended: false,
+        supported_languages: vec!["en".to_string()],
+        supports_language_selection: false,
+        is_custom: false,
+        supports_streaming: streaming,
+        supports_language_detection: false,
+    }
+}
+
+impl Models for FakeModels {
+    fn available(&self) -> Vec<crate::managers::model::ModelInfo> {
+        vec![fake_model("fake-model", self.streaming)]
+    }
+    fn info(&self, model_id: &str) -> Option<crate::managers::model::ModelInfo> {
+        Some(fake_model(model_id, self.streaming))
+    }
 }
 
 impl ServerHost for FakeHost {
     fn settings(&self) -> crate::settings::AppSettings {
         crate::settings::get_default_settings()
     }
-    fn models(&self) -> Arc<crate::managers::model::ModelManager> {
-        unimplemented!("no test here reaches the model list")
+    fn models(&self) -> Arc<dyn Models> {
+        Arc::new(FakeModels {
+            streaming: self.streaming_model,
+        })
     }
     fn show_transcribing_overlay(&self) {
         self.overlay.lock().unwrap().push("transcribing");
@@ -78,8 +126,15 @@ impl Transcriber for IdleTranscriber {
 }
 
 fn state(token: Option<&str>) -> ServerState {
+    state_with_streaming(token, true)
+}
+
+fn state_with_streaming(token: Option<&str>, streaming: bool) -> ServerState {
     ServerState {
-        host: Arc::new(FakeHost::default()),
+        host: Arc::new(FakeHost {
+            streaming_model: streaming,
+            ..Default::default()
+        }),
         transcription: Arc::new(IdleTranscriber),
         token: token.map(str::to_string),
         show_overlay: false,
@@ -240,4 +295,83 @@ fn wav_header_with_no_frames() -> Vec<u8> {
     wav.extend_from_slice(b"data");
     wav.extend_from_slice(&0u32.to_le_bytes());
     wav
+}
+
+/// A GET that axum's `WebSocketUpgrade` extractor will accept. Without these
+/// headers the extractor rejects with 400 before the handler runs, so every
+/// refusal inside `stream()` looks like a malformed request.
+fn ws_get(path: &str) -> Request<Body> {
+    Request::builder()
+        .uri(path)
+        .header("connection", "Upgrade")
+        .header("upgrade", "websocket")
+        .header("sec-websocket-version", "13")
+        .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+        .body(Body::empty())
+        .unwrap()
+}
+
+#[tokio::test]
+async fn the_model_list_is_served_when_authorised() {
+    let request = Request::builder()
+        .uri("/v1/models")
+        .header("authorization", "Bearer secret")
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(send(state(Some("secret")), request).await, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn a_non_upgrade_request_to_the_stream_route_is_426() {
+    // Documenting where the boundary is: `WebSocketUpgrade` rejects during
+    // extraction, so nothing inside the handler runs for a plain GET. That is
+    // why the refusals below are tested through `validate_stream` instead.
+    // A plain GET is 400 (no Upgrade header); a well-formed upgrade attempt is
+    // 426, because `oneshot` carries no real connection to upgrade. Either
+    // way the handler body never runs.
+    assert_eq!(
+        send(state(None), get("/v1/audio/stream")).await,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        send(state(None), ws_get("/v1/audio/stream")).await,
+        StatusCode::UPGRADE_REQUIRED
+    );
+}
+
+fn params(sample_rate: Option<usize>, dialect: Option<&str>) -> super::routes::StreamParams {
+    super::routes::StreamParams {
+        sample_rate,
+        dialect: dialect.map(str::to_string),
+        token: None,
+    }
+}
+
+#[test]
+fn a_model_that_cannot_stream_is_refused_with_conflict() {
+    let err = super::routes::validate_stream("slow-model", false, &params(None, None)).unwrap_err();
+    assert_eq!(err.status, StatusCode::CONFLICT);
+}
+
+#[test]
+fn a_zero_sample_rate_is_refused() {
+    let err = super::routes::validate_stream("m", true, &params(Some(0), None)).unwrap_err();
+    assert_eq!(err.status, StatusCode::BAD_REQUEST);
+}
+
+#[test]
+fn an_unknown_dialect_is_refused() {
+    let err =
+        super::routes::validate_stream("m", true, &params(None, Some("klingon"))).unwrap_err();
+    assert_eq!(err.status, StatusCode::BAD_REQUEST);
+}
+
+#[test]
+fn the_default_dialect_is_native_at_the_engine_rate() {
+    let Ok((rate, dialect)) = super::routes::validate_stream("m", true, &params(None, None))
+    else {
+        panic!("the default request must validate");
+    };
+    assert_eq!(rate, crate::server::audio::TARGET_HZ);
+    assert_eq!(dialect, super::routes::Dialect::Native);
 }
