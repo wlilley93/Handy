@@ -56,6 +56,18 @@ hound = "3.5.1"
 log = "0.4.25"
 env_filter = "0.1.0"
 tokio = "1.43.0"
+# Local transcription API (src/server). axum brings its own hyper/tower; the
+# feature list is deliberately narrow — no TLS, no compression, no tracing.
+# base64 carries PCM16 inside the OpenCodex dictation dialect's JSON frames.
+base64 = "0.22"
+axum = { version = "0.8", default-features = false, features = [
+  "http1",
+  "json",
+  "multipart",
+  "query",
+  "tokio",
+  "ws",
+] }
 vad-rs = { git = "https://github.com/cjpais/vad-rs", default-features = false }
 earshot = "1.2.2"
 enigo = "0.6.1"
@@ -190,6 +202,7 @@ tao = { git = "https://github.com/cjpais/tao", rev = "c3bee28c1d446d95f08c95c3b6
 tao-macros = { git = "https://github.com/cjpais/tao", rev = "c3bee28c1d446d95f08c95c3b6f8d4bde052b876" }
 
 [dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
 tempfile = "3"
 # Test-only tokio features for the local socket servers exercising the
 # resumable HTTP downloader; normal builds keep the leaner feature set.
