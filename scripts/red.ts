@@ -81,6 +81,31 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
   });
 }
 
+/**
+ * The names cargo actually runs.
+ *
+ * Without this, a guard pointing at a renamed or deleted test reports MISS —
+ * the same word as a guard whose break nothing noticed — and the two want
+ * opposite fixes: one is a stale entry, the other is a missing test.
+ */
+async function listedTests(): Promise<Set<string>> {
+  const proc = Bun.spawn(["cargo", "test", "--lib", "--", "--list"], {
+    cwd: "src-tauri",
+    stdout: "pipe",
+    stderr: "ignore",
+  });
+  const out = await new Response(proc.stdout).text();
+  await proc.exited;
+  return new Set(
+    out
+      .split("\n")
+      .filter(line => line.endsWith(": test"))
+      .map(line => line.slice(0, -": test".length).split("::").pop()!),
+  );
+}
+
+const listed = await listedTests();
+
 const misses: string[] = [];
 
 for (const guard of GUARDS) {
@@ -88,6 +113,10 @@ for (const guard of GUARDS) {
   const occurrences = original.split(guard.from).length - 1;
   if (occurrences !== 1) {
     misses.push(`${guard.name}: its source appears ${occurrences} times in ${guard.file}`);
+    continue;
+  }
+  if (!listed.has(guard.expect)) {
+    misses.push(`${guard.name}: no test named ${guard.expect}`);
     continue;
   }
   await Bun.write(guard.file, original.replace(guard.from, guard.to));
