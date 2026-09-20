@@ -114,14 +114,71 @@ function withoutSpecifiers(message: string): string {
  * both directions should not be printing a score.
  */
 const redSource = await Bun.file("scripts/red.ts").text();
-const provenFragments = [...redSource.matchAll(/from:\s*(?:`([\s\S]*?)`|'([^']*)'|"([^"]*)")/g)]
-  .map(match => (match[1] ?? match[2] ?? match[3] ?? "").replace(/\\n/g, "\n"))
-  .filter(Boolean);
+
+/** One red.ts entry: which file it edits, and the source it removes. */
+type RedEntry = { file: string; from: string };
+
+const redEntries: RedEntry[] = [];
+for (const block of redSource.split(/\n  \{\n/).slice(1)) {
+  const file = block.match(/file:\s*"([^"]+)"/)?.[1];
+  const from = block.match(/from:\s*(?:`([\s\S]*?)`|'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)")/);
+  if (!file || !from) continue;
+  const raw = from[1] ?? from[2] ?? from[3] ?? "";
+  redEntries.push({ file, from: raw.replace(/\\n/g, "\n").replace(/\\`/g, "`") });
+}
+
+/**
+ * A site is proven when a red.ts entry edits the block it lives in.
+ *
+ * Textual matching was wrong for the fifth and sixth time: an entry that
+ * removes a *condition* (`if !supports_streaming {`) shares no text with the
+ * *message* of the refusal it guards, so two new guards moved red.ts from
+ * 11/11 to 13/13 while this reported 5/22 either way. The link is positional —
+ * the guard opens a block and the refusal sits inside it.
+ *
+ * The span is the guard's own block, found by brace matching rather than a
+ * fixed line window: `if !supports_streaming {` covers every line up to its
+ * closing brace, which is exactly the refusal it guards and nothing after it.
+ * A guard that opens no block covers only its own lines.
+ */
+function blockSpan(source: string, at: number, from: string): number {
+  let depth = 0;
+  let opened = false;
+  for (let i = at; i < source.length; i++) {
+    const c = source[i];
+    if (c === "{") {
+      depth++;
+      opened = true;
+    } else if (c === "}") {
+      depth--;
+      if (opened && depth <= 0) return i;
+    }
+  }
+  return at + from.length;
+}
+
+const provenLines = new Map<string, Set<number>>();
+const unlocated: string[] = [];
+for (const entry of redEntries) {
+  const source = await Bun.file(entry.file).text().catch(() => "");
+  const at = source.indexOf(entry.from);
+  if (at === -1) {
+    // Not "this guard covers nothing" — the tool cannot see. Skipping these
+    // silently reported 0/22 at exit 0 when the lookup was broken, which is
+    // the clean sheet this floor exists to refuse.
+    unlocated.push(`${entry.file}: ${entry.from.split("\n")[0]!.trim()}`);
+    continue;
+  }
+  const startLine = source.slice(0, at).split("\n").length;
+  const endLine = source.slice(0, blockSpan(source, at, entry.from)).split("\n").length;
+  const base = entry.file.split("/").pop()!;
+  if (!provenLines.has(base)) provenLines.set(base, new Set());
+  const lines = provenLines.get(base)!;
+  for (let line = startLine; line <= endLine; line++) lines.add(line);
+}
 
 function proven(site: Site): boolean {
-  return provenFragments.some(fragment =>
-    site.text.length > 6 && fragment.includes(site.text)
-  );
+  return provenLines.get(site.file)?.has(site.line) ?? false;
 }
 
 const sites: Site[] = [];
@@ -138,13 +195,14 @@ const unproven = sites.filter(site => !proven(site));
 // justify.
 const MUST_PARSE = ["token.is_none()", "8_388_607", "header.or(query)"];
 const blind = MUST_PARSE.filter(
-  fragment => !provenFragments.some(source => source.includes(fragment)),
+  fragment => !redEntries.some(entry => entry.from.includes(fragment)),
 );
-if (blind.length || provenFragments.length < 5) {
+if (blind.length || redEntries.length < 10 || unlocated.length) {
   console.error(
-    `guard-coverage cannot read red.ts: parsed ${provenFragments.length} entries` +
+    `guard-coverage cannot read red.ts: parsed ${redEntries.length} entries` +
     (blind.length ? `, missing ${blind.join(", ")}` : ""),
   );
+  for (const entry of unlocated) console.error(`  could not locate  ${entry}`);
   process.exit(2);
 }
 

@@ -117,6 +117,20 @@ const GUARDS: Guard[] = [
     to: "    if false {",
     expect: "a_zero_sample_rate_is_refused",
   },
+  {
+    name: "an unknown dialect is refused",
+    file: "src-tauri/src/server/routes.rs",
+    from: `        Some("codex") => Dialect::Codex,`,
+    to: `        Some("codex") | Some(_) => Dialect::Codex,`,
+    expect: "an_unknown_dialect_is_refused",
+  },
+  {
+    name: "port zero is refused",
+    file: "src-tauri/src/server/mod.rs",
+    from: "        if port == 0 {",
+    to: "        if false {",
+    expect: "port_zero_is_refused",
+  },
 ];
 
 async function runSuite(): Promise<{ ok: boolean; output: string }> {
