@@ -597,3 +597,34 @@ async fn waiting_for_a_model_that_is_loaded_returns_at_once() {
     assert!(super::routes::wait_for_model(&state, std::time::Duration::from_secs(30)).await);
     assert!(started.elapsed() < std::time::Duration::from_secs(1));
 }
+
+#[tokio::test]
+async fn a_declared_length_over_the_limit_is_refused_as_too_large() {
+    // The limit layer counts bytes while reading and its rejection arrives as
+    // a multipart parse error, so an oversized upload used to be answered
+    // "could not read the multipart body". A client that declares its length
+    // now gets the truth without sending 128 MiB first.
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/audio/transcriptions")
+        .header("content-type", "multipart/form-data; boundary=b")
+        .header("content-length", (super::routes::MAX_UPLOAD_BYTES + 1).to_string())
+        .body(Body::from("--b--\r\n"))
+        .unwrap();
+    assert_eq!(send(state(None), request).await, StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+#[tokio::test]
+async fn a_declared_length_under_the_limit_is_read_normally() {
+    let wav = tiny_wav();
+    let (content_type, body) = multipart(&[("file", Some(&wav))]);
+    let len = body.len();
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/audio/transcriptions")
+        .header("content-type", content_type)
+        .header("content-length", len.to_string())
+        .body(Body::from(body))
+        .unwrap();
+    assert_eq!(send(state(None), request).await, StatusCode::OK);
+}

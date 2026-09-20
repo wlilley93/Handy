@@ -175,4 +175,11 @@ export const GUARDS: Guard[] = [
     to: "    let deadline = std::time::Instant::now();",
     expect: "waiting_for_a_model_that_never_loads_gives_up",
   },
+  {
+    name: "an oversized declared length is 413, not a parse error",
+    file: "src-tauri/src/server/routes.rs",
+    from: "        if declared > MAX_UPLOAD_BYTES {",
+    to: "        if false {",
+    expect: "a_declared_length_over_the_limit_is_refused_as_too_large",
+  },
 ];

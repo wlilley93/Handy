@@ -28,7 +28,7 @@ use crate::managers::transcription::StreamTextEvent;
 
 /// Largest upload accepted. Generous enough for ten minutes of 44.1 kHz stereo
 /// WAV, which is what `MAX_AUDIO_SECS` allows once decoded.
-const MAX_UPLOAD_BYTES: usize = 128 * 1024 * 1024;
+pub(super) const MAX_UPLOAD_BYTES: usize = 128 * 1024 * 1024;
 
 pub fn router(state: ServerState) -> Router {
     Router::new()
@@ -204,6 +204,27 @@ async fn transcriptions(
     multipart: Multipart,
 ) -> Result<Response, ApiError> {
     check_auth(&state, &headers, None)?;
+
+    // Say "too big" when it is too big. `DefaultBodyLimit` counts bytes as it
+    // reads, and its rejection surfaces as a multipart parse error — so an
+    // oversized upload was answered "could not read the multipart body",
+    // which sends the caller looking for a malformed request. A client that
+    // declares its length gets a straight answer here; the read limit stays
+    // as the backstop for one that does not, or lies.
+    if let Some(declared) = headers
+        .get("content-length")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<usize>().ok())
+    {
+        if declared > MAX_UPLOAD_BYTES {
+            return Err(ApiError::new(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!(
+                    "upload is {declared} bytes, over the {MAX_UPLOAD_BYTES} byte limit"
+                ),
+            ));
+        }
+    }
 
     let req = read_multipart(multipart).await?;
     let bytes = req
