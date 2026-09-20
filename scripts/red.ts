@@ -59,6 +59,13 @@ const GUARDS: Guard[] = [
     to: `            let scale = i32::MAX as f32;`,
     expect: "scales_24_bit_by_the_sample_width_not_the_container",
   },
+  {
+    name: "the router enforces auth on every route but healthz",
+    file: "src-tauri/src/server/routes.rs",
+    from: `    match header.or(query) {\n        Some(t) => secret_eq(t, expected),\n        None => false,\n    }`,
+    to: `    let _ = (header, query, expected);\n    true`,
+    expect: "a_missing_token_is_refused_on_the_model_list",
+  },
 ];
 
 async function runSuite(): Promise<{ ok: boolean; output: string }> {

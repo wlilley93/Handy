@@ -128,12 +128,61 @@ impl ServerHost for TauriHost {
     }
 }
 
+/// The transcription engine, as the HTTP layer uses it.
+///
+/// The second half of the same seam as [`ServerHost`]: `TranscriptionManager`
+/// is built from an `AppHandle` too, so holding it concretely kept
+/// `ServerState` unconstructible even after the host was abstracted. These are
+/// the eight methods `routes.rs` actually calls — a narrower surface than the
+/// manager's, which is the point of naming it.
+pub trait Transcriber: Send + Sync + 'static {
+    fn is_model_loaded(&self) -> bool;
+    fn initiate_model_load(&self);
+    fn current_backend(&self) -> Option<String>;
+    fn stream_router(&self) -> Arc<crate::managers::transcription::StreamRouter>;
+    fn start_stream(&self);
+    fn cancel_stream(&self);
+    fn finalize_stream(&self) -> Result<Option<String>>;
+    fn transcribe(&self, audio: Vec<f32>) -> Result<String>;
+    fn load_model(&self, model_id: &str) -> Result<()>;
+}
+
+impl Transcriber for TranscriptionManager {
+    fn is_model_loaded(&self) -> bool {
+        TranscriptionManager::is_model_loaded(self)
+    }
+    fn initiate_model_load(&self) {
+        TranscriptionManager::initiate_model_load(self)
+    }
+    fn current_backend(&self) -> Option<String> {
+        TranscriptionManager::current_backend(self)
+    }
+    fn stream_router(&self) -> Arc<crate::managers::transcription::StreamRouter> {
+        TranscriptionManager::stream_router(self)
+    }
+    fn start_stream(&self) {
+        TranscriptionManager::start_stream(self)
+    }
+    fn cancel_stream(&self) {
+        TranscriptionManager::cancel_stream(self)
+    }
+    fn finalize_stream(&self) -> Result<Option<String>> {
+        TranscriptionManager::finalize_stream(self)
+    }
+    fn transcribe(&self, audio: Vec<f32>) -> Result<String> {
+        TranscriptionManager::transcribe(self, audio)
+    }
+    fn load_model(&self, model_id: &str) -> Result<()> {
+        TranscriptionManager::load_model(self, model_id)
+    }
+}
+
 /// Everything a handler needs. Cloned per request; the expensive parts are
 /// behind `Arc`.
 #[derive(Clone)]
 pub struct ServerState {
     pub host: Arc<dyn ServerHost>,
-    pub transcription: Arc<TranscriptionManager>,
+    pub transcription: Arc<dyn Transcriber>,
     pub token: Option<String>,
     /// Drive the recording overlay for server-triggered work. False when the
     /// app runs headless (`--serve`), where no overlay window exists.
@@ -312,3 +361,6 @@ mod tests {
         assert!(ServerConfig::resolve(0, None, false).is_err());
     }
 }
+
+#[cfg(test)]
+mod http_tests;

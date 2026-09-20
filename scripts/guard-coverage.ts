@@ -48,7 +48,13 @@ function refusals(file: string, source: string): Site[] {
 /** Everything inside `#[cfg(test)] mod tests { ... }`, across the module. */
 function testBodies(sources: Map<string, string>): string {
   let all = "";
-  for (const source of sources.values()) {
+  for (const [name, source] of sources) {
+    // A whole file may be the test module (`mod http_tests;`), in which case
+    // there is no `#[cfg(test)]` inside it to find.
+    if (name.endsWith("_tests.rs")) {
+      all += source;
+      continue;
+    }
     const start = source.indexOf("#[cfg(test)]");
     if (start !== -1) all += source.slice(start);
   }
@@ -58,6 +64,16 @@ function testBodies(sources: Map<string, string>): string {
 const sources = new Map<string, string>();
 for (const name of readdirSync(DIR)) {
   if (name.endsWith(".rs")) sources.set(name, await Bun.file(join(DIR, name)).text());
+}
+
+/** Production code only: everything before `#[cfg(test)]`, and no test-only
+ *  module at all. Counting refusals inside tests inflates the denominator with
+ *  the very code that is supposed to reduce it — adding six request-level
+ *  tests moved the figure from 5/22 to 5/28 without changing the module. */
+function productionOnly(name: string, source: string): string | null {
+  if (name.endsWith("_tests.rs")) return null;
+  const testMod = source.indexOf("#[cfg(test)]");
+  return testMod === -1 ? source : source.slice(0, testMod);
 }
 
 /** Both sides lowercased and stripped of punctuation: the message says
@@ -75,7 +91,10 @@ function withoutSpecifiers(message: string): string {
 const tests = testBodies(sources);
 const normalisedTests = normalise(tests);
 const sites: Site[] = [];
-for (const [name, source] of sources) sites.push(...refusals(name, source));
+for (const [name, source] of sources) {
+  const production = productionOnly(name, source);
+  if (production !== null) sites.push(...refusals(name, production));
+}
 
 // A distinctive fragment of the message: the first few words, which is what a
 // test assertion tends to quote.
