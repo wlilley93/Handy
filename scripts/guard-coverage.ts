@@ -218,6 +218,18 @@ for (const [name, source] of sources) {
 }
 const sites = allSites;
 
+// A waiver keyed on message text stops matching the moment the message is
+// reworded, and the site then vanishes from the denominator instead of
+// reappearing as work. An unused waiver is a stale one.
+const unusedWaivers = Object.keys(UNREACHABLE).filter(
+  text => !waived.some(w => w.site.text === text),
+);
+if (unusedWaivers.length) {
+  console.error("waivers that no longer match any site — reworded, or removed:");
+  for (const key of unusedWaivers) console.error(`  ${key}`);
+  process.exit(2);
+}
+
 const unproven = sites.filter(site => !proven(site));
 
 // The floor. These are `from:` sources in red.ts, not messages — the earlier
