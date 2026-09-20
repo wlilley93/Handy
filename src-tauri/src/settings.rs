@@ -514,6 +514,25 @@ pub struct AppSettings {
     /// `overlay_position` (position `none` → style `None`).
     #[serde(default = "default_overlay_style")]
     pub overlay_style: OverlayStyle,
+    /// Serve the local HTTP transcription API. Off by default: turning it on
+    /// opens a port, so it is the user's decision, never a migration's.
+    #[serde(default)]
+    pub server_enabled: bool,
+    #[serde(default = "default_server_port")]
+    pub server_port: u16,
+    /// Bearer token required by the API. Always required when `server_allow_lan`
+    /// is on; optional on loopback, where the OS already limits callers to
+    /// processes on this machine.
+    #[serde(default)]
+    pub server_token: Option<String>,
+    /// Bind 0.0.0.0 instead of 127.0.0.1. Refused without a token — an open
+    /// port with no auth is a microphone-grade capability handed to the LAN.
+    #[serde(default)]
+    pub server_allow_lan: bool,
+}
+
+fn default_server_port() -> u16 {
+    8915
 }
 
 fn default_model() -> String {
@@ -970,6 +989,10 @@ pub fn get_default_settings() -> AppSettings {
         vad_enabled: default_vad_enabled(),
         vad_backend: VadBackend::default(),
         overlay_style: default_overlay_style(),
+        server_enabled: false,
+        server_port: default_server_port(),
+        server_token: None,
+        server_allow_lan: false,
     }
 }
 

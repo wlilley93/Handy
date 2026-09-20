@@ -56,6 +56,16 @@ hound = "3.5.1"
 log = "0.4.25"
 env_filter = "0.1.0"
 tokio = "1.43.0"
+# Local transcription API (src/server). axum brings its own hyper/tower; the
+# feature list is deliberately narrow — no TLS, no compression, no tracing.
+axum = { version = "0.8", default-features = false, features = [
+  "http1",
+  "json",
+  "multipart",
+  "query",
+  "tokio",
+  "ws",
+] }
 vad-rs = { git = "https://github.com/cjpais/vad-rs", default-features = false }
 earshot = "1.2.2"
 enigo = "0.6.1"

@@ -263,6 +263,7 @@
         "app": "App",
         "output": "Output",
         "transcription": "Transcription",
+        "localApi": "Local API",
         "history": "History",
         "experimental": "Experimental"
       },
@@ -398,6 +399,31 @@
       "fillerWordRemoval": {
         "title": "Remove Filler Words",
         "description": "Removes common hesitation words from transcriptions. Turn off to keep them."
+      },
+      "localApi": {
+        "label": "Local API server",
+        "description": "Serve transcription over HTTP on this machine so other apps can use the same model Handy uses. Listens on 127.0.0.1 only unless you allow network access. POST audio to /v1/audio/transcriptions (OpenAI-compatible).",
+        "port": {
+          "label": "Port",
+          "description": "Port the API listens on. Default 8915."
+        },
+        "token": {
+          "label": "Bearer token",
+          "description": "Optional on 127.0.0.1, required for network access. Clients send it as an Authorization: Bearer header.",
+          "setPlaceholder": "A token is set — type to replace",
+          "unsetPlaceholder": "No token",
+          "clear": "Clear",
+          "lanNeedsToken": "Turn off network access before clearing the token"
+        },
+        "allowLan": {
+          "label": "Allow network access",
+          "description": "Bind 0.0.0.0 so other machines on your network can reach the API. Requires a token."
+        },
+        "status": {
+          "label": "Status",
+          "description": "The address the server is actually listening on.",
+          "stopped": "Not running"
+        }
       }
     },
     "postProcessing": {

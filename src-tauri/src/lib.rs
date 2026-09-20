@@ -17,6 +17,7 @@ mod overlay;
 mod paste_tx;
 pub mod portable;
 mod secure_input;
+pub mod server;
 mod settings;
 mod shortcut;
 mod signal_handle;
@@ -217,6 +218,7 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     app_handle.manage(model_manager.clone());
     app_handle.manage(transcription_manager.clone());
     app_handle.manage(history_manager.clone());
+    app_handle.manage(Arc::new(server::ServerHandle::new()));
     app_handle.manage(tray::TrayState::new());
 
     // Note: Shortcuts are NOT initialized here.
@@ -368,6 +370,10 @@ fn initialize_core_logic(app_handle: &AppHandle) {
 
     // Create the recording overlay window (hidden by default)
     utils::create_recording_overlay(app_handle);
+
+    // Bring up the local API if the user left it enabled. Non-fatal on failure
+    // (a taken port must not stop the app from starting) — see start_if_enabled.
+    server::start_if_enabled(app_handle);
 }
 
 #[tauri::command]
@@ -733,6 +739,8 @@ pub fn run(cli_args: CliArgs) {
             commands::models::cancel_download,
             commands::models::set_active_model,
             commands::models::get_current_model,
+            commands::server::get_server_status,
+            commands::server::set_server_settings,
             commands::models::get_transcription_model_status,
             commands::models::is_model_loading,
             commands::models::rescan_local_models,
@@ -783,8 +791,10 @@ pub fn run(cli_args: CliArgs) {
 
     // The headless path must run as its own instance (see the single-instance
     // note below), not forward to an already-running app.
-    let headless_mode =
-        cli_args.transcribe_file.is_some() || cli_args.list_devices || cli_args.list_models;
+    let headless_mode = cli_args.transcribe_file.is_some()
+        || cli_args.list_devices
+        || cli_args.list_models
+        || cli_args.serve;
 
     #[allow(unused_mut)]
     let mut builder = tauri::Builder::default()
@@ -914,8 +924,37 @@ pub fn run(cli_args: CliArgs) {
                 );
                 app_handle.manage(model_manager);
                 app_handle.manage(transcription_manager);
+                app_handle.manage(Arc::new(server::ServerHandle::new()));
                 managers::transcription::init_transcribe_backend();
                 managers::transcription::apply_accelerator_settings(&app_handle);
+
+                // `--serve` is the one headless mode that does not exit: it
+                // binds the API and stays up, so it runs on the async runtime
+                // rather than the one-shot worker thread below.
+                if cli_args.serve {
+                    let handle = app_handle.clone();
+                    let port = cli_args.serve_port;
+                    tauri::async_runtime::spawn(async move {
+                        let config = match server::ServerConfig::from_settings(&handle, port) {
+                            Ok(c) => c,
+                            Err(e) => {
+                                eprintln!("error: {e}");
+                                let _ = std::io::Write::flush(&mut std::io::stderr());
+                                std::process::exit(2);
+                            }
+                        };
+                        match server::start(&handle, config, false).await {
+                            Ok(addr) => println!("handy: serving on http://{addr}"),
+                            Err(e) => {
+                                eprintln!("error: {e}");
+                                let _ = std::io::Write::flush(&mut std::io::stderr());
+                                std::process::exit(1);
+                            }
+                        }
+                        let _ = std::io::Write::flush(&mut std::io::stdout());
+                    });
+                    return Ok(());
+                }
 
                 let handle = app_handle.clone();
                 let args = cli_args.clone();
