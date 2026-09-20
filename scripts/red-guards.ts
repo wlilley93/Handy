@@ -182,4 +182,12 @@ export const GUARDS: Guard[] = [
     to: "        if false {",
     expect: "a_declared_length_over_the_limit_is_refused_as_too_large",
   },
+  {
+    name: "session.start requires the documented sample rate",
+    file: "src-tauri/src/server/routes.rs",
+    // Breaks by restoring the default that used to be there.
+    from: '                .and_then(|r| r.as_u64())\n            else {',
+    to: '                .and_then(|r| r.as_u64())\n                .or(Some(TARGET_HZ as u64))\n            else {',
+    expect: "codex_session_start_without_a_rate_is_refused",
+  },
 ];

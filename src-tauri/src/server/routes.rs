@@ -499,13 +499,25 @@ fn parse_codex_frame(text: &str) -> ClientFrame {
     };
     match value.get("type").and_then(|t| t.as_str()) {
         Some("session.start") => {
-            // 16 kHz is the engine's own rate, and the right assumption when a
-            // client opens a session without stating one.
-            let rate = value
+            // `config.sample_rate_hz` is required by the dialect, so a frame
+            // without it is refused rather than assumed.
+            //
+            // Assuming 16 kHz was the previous behaviour and it fails
+            // silently: a client sending 24 kHz audio had it read as 16 kHz,
+            // never resampled, and transcribed slightly wrong — measured, the
+            // same clip came back "dog Pack my box" instead of "dog. Pack my
+            // box". OpenCodex's relay rejects such a frame outright, so no
+            // real client sends one; the only thing this leniency bought was a
+            // way to be quietly wrong.
+            let Some(rate) = value
                 .get("config")
                 .and_then(|c| c.get("sample_rate_hz"))
                 .and_then(|r| r.as_u64())
-                .unwrap_or(TARGET_HZ as u64);
+            else {
+                return ClientFrame::Bad(
+                    "session.start needs config.sample_rate_hz — see LOCAL_API.md".into(),
+                );
+            };
             if !(8_000..=192_000).contains(&rate) {
                 return ClientFrame::Bad(format!("sample_rate_hz {rate} is outside 8000-192000"));
             }
@@ -833,10 +845,13 @@ mod tests {
     }
 
     #[test]
-    fn codex_session_start_without_a_rate_falls_back_to_the_engine_rate() {
-        assert_eq!(
-            parse_codex_frame(r#"{"type":"session.start","config":{}}"#),
-            ClientFrame::Start(TARGET_HZ)
+    fn codex_session_start_without_a_rate_is_refused() {
+        // Not defaulted: sending 24 kHz audio into a session read as 16 kHz
+        // transcribes slightly wrong and says nothing.
+        let frame = parse_codex_frame(r#"{"type":"session.start"}"#);
+        assert!(
+            matches!(&frame, ClientFrame::Bad(m) if m.contains("sample_rate_hz")),
+            "got {frame:?}"
         );
     }
 
