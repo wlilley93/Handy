@@ -129,6 +129,76 @@ fn state(token: Option<&str>) -> ServerState {
     state_with_streaming(token, true)
 }
 
+/// A state whose host is handed back, so what the handlers asked the app to do
+/// can be asserted afterwards.
+fn state_watching_overlay(
+    transcription: Arc<dyn Transcriber>,
+) -> (ServerState, Arc<FakeHost>) {
+    let host = Arc::new(FakeHost {
+        streaming_model: true,
+        ..Default::default()
+    });
+    let state = ServerState {
+        host: host.clone(),
+        transcription,
+        token: None,
+        show_overlay: true,
+    };
+    (state, host)
+}
+
+/// An engine that fails. `IdleTranscriber` returns Ok, so the two 500s in
+/// `run_transcription` were unreachable without this.
+struct FailingTranscriber;
+
+impl Transcriber for FailingTranscriber {
+    fn is_model_loaded(&self) -> bool {
+        true
+    }
+    fn initiate_model_load(&self) {}
+    fn current_backend(&self) -> Option<String> {
+        None
+    }
+    fn stream_router(&self) -> Arc<StreamRouter> {
+        unimplemented!("no test here opens a stream")
+    }
+    fn start_stream(&self) {}
+    fn cancel_stream(&self) {}
+    fn finalize_stream(&self) -> anyhow::Result<Option<String>> {
+        Ok(None)
+    }
+    fn transcribe(&self, _audio: Vec<f32>) -> anyhow::Result<String> {
+        anyhow::bail!("the engine fell over")
+    }
+    fn load_model(&self, _model_id: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+/// A WAV with four frames of real audio, so decoding succeeds and the request
+/// reaches the engine.
+fn tiny_wav() -> Vec<u8> {
+    let mut wav = Vec::new();
+    let data: [i16; 4] = [0, 16384, -16384, 0];
+    let data_bytes = (data.len() * 2) as u32;
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + data_bytes).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&16_000u32.to_le_bytes());
+    wav.extend_from_slice(&32_000u32.to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes());
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data_bytes.to_le_bytes());
+    for sample in data {
+        wav.extend_from_slice(&sample.to_le_bytes());
+    }
+    wav
+}
+
 fn state_with_streaming(token: Option<&str>, streaming: bool) -> ServerState {
     ServerState {
         host: Arc::new(FakeHost {
@@ -374,4 +444,40 @@ fn the_default_dialect_is_native_at_the_engine_rate() {
     };
     assert_eq!(rate, crate::server::audio::TARGET_HZ);
     assert_eq!(dialect, super::routes::Dialect::Native);
+}
+
+#[tokio::test]
+async fn an_engine_failure_is_a_500() {
+    let (state, _host) = state_watching_overlay(Arc::new(FailingTranscriber));
+    let wav = tiny_wav();
+    assert_eq!(
+        send(state, upload(&[("file", Some(&wav))])).await,
+        StatusCode::INTERNAL_SERVER_ERROR
+    );
+}
+
+#[tokio::test]
+async fn the_overlay_is_hidden_even_when_the_engine_fails() {
+    // A stuck overlay is user-visible and survives the request that caused it.
+    // The hide sits before the match on the result, which is the thing this
+    // asserts: it is not on the success path only.
+    let (state, host) = state_watching_overlay(Arc::new(FailingTranscriber));
+    let wav = tiny_wav();
+    let _ = send(state, upload(&[("file", Some(&wav))])).await;
+    assert_eq!(
+        *host.overlay.lock().unwrap(),
+        vec!["transcribing", "hide"],
+        "overlay calls did not pair"
+    );
+}
+
+#[tokio::test]
+async fn the_overlay_pairs_on_the_success_path_too() {
+    let (state, host) = state_watching_overlay(Arc::new(IdleTranscriber));
+    let wav = tiny_wav();
+    assert_eq!(
+        send(state, upload(&[("file", Some(&wav))])).await,
+        StatusCode::OK
+    );
+    assert_eq!(*host.overlay.lock().unwrap(), vec!["transcribing", "hide"]);
 }

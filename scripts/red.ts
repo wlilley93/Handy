@@ -131,6 +131,20 @@ const GUARDS: Guard[] = [
     to: "        if false {",
     expect: "port_zero_is_refused",
   },
+  {
+    name: "the overlay is hidden on every path, not just success",
+    file: "src-tauri/src/server/routes.rs",
+    from: `    if state.show_overlay {\n        state.host.hide_recording_overlay();\n    }\n\n    match result {\n        Ok(Ok(text)) => Ok(text),`,
+    to: `    match result {\n        Ok(Ok(text)) => {\n            if state.show_overlay {\n                state.host.hide_recording_overlay();\n            }\n            Ok(text)\n        }`,
+    expect: "the_overlay_is_hidden_even_when_the_engine_fails",
+  },
+  {
+    name: "an engine failure is a 500, not an empty 200",
+    file: "src-tauri/src/server/routes.rs",
+    from: `        Ok(Err(e)) => Err(ApiError::new(`,
+    to: `        Ok(Err(_e)) => Ok(String::new()),\n        #[allow(unreachable_patterns)]\n        Ok(Err(e)) => Err(ApiError::new(`,
+    expect: "an_engine_failure_is_a_500",
+  },
 ];
 
 async function runSuite(): Promise<{ ok: boolean; output: string }> {
