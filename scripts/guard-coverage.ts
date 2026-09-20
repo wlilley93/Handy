@@ -35,7 +35,17 @@ function refusals(file: string, source: string): Site[] {
     if (bail) out.push({ file, line: index + 1, kind: "bail!", text: bail[1]! });
     const status = line.match(/StatusCode::([A-Z_]+)/);
     if (status && !line.trim().startsWith("//")) {
-      out.push({ file, line: index + 1, kind: "status", text: status[1]! });
+      // The message on the following line, when there is one. Two sites can
+      // share a status — `PAYLOAD_TOO_LARGE` is raised both by the declared-
+      // length check and by the read backstop — and without the message they
+      // cannot be told apart, so a waiver aimed at one would silence both.
+      const message = next.match(/"([^"]{6,})"/)?.[1];
+      out.push({
+        file,
+        line: index + 1,
+        kind: "status",
+        text: message ? `${status[1]}: ${message}` : status[1]!,
+      });
     }
     const guard = line.match(/^\s*(?:return (?:false|None);|.*\breturn Err\()/);
     if (guard && !line.includes("//")) {
@@ -173,6 +183,9 @@ function proven(site: Site): boolean {
  * by red.ts: removing it made nothing fail.
  */
 const UNREACHABLE: Record<string, string> = {
+  "PAYLOAD_TOO_LARGE: could not read `file`: {e}":
+    "the read backstop: DefaultBodyLimit's rejection usually surfaces at next_field() instead, " +
+    "so reaching this one depends on where chunk boundaries fall (see 093bdf2)",
   "WAV declares zero channels":
     "hound refuses a zero-channel file while parsing; kept as defence for downmix",
 };
