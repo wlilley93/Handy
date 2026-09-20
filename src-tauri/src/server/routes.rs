@@ -435,7 +435,11 @@ async fn stream(
 
 /// How long a streaming client waits for a cold engine before giving up. A
 /// first GGUF load off disk onto Metal is measured in seconds, not milliseconds.
-const MODEL_LOAD_WAIT: std::time::Duration = std::time::Duration::from_secs(90);
+/// Measured 2026-09-20 on an M4 Pro, Parakeet Unified EN 0.6B, first
+/// transcription after a cold boot with the model not resident: 1.61s end to
+/// end (run/cold-20260920-230032.log). 30s is ~18x that — headroom for slower
+/// disks and hardware, not a reflection of the expected wait.
+const MODEL_LOAD_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Poll until the engine is resident or the deadline passes.
 ///
