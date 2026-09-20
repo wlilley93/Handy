@@ -21,15 +21,10 @@ use axum::{
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::sync::Arc;
-use tauri::{Listener, Manager};
-use tauri_specta::Event;
 
 use super::audio::{decode_pcm16, decode_wav, MAX_AUDIO_SECS, TARGET_HZ};
 use super::ServerState;
-use crate::managers::model::ModelManager;
 use crate::managers::transcription::StreamTextEvent;
-use crate::settings::get_settings;
 
 /// Largest upload accepted. Generous enough for ten minutes of 44.1 kHz stereo
 /// WAV, which is what `MAX_AUDIO_SECS` allows once decoded.
@@ -154,7 +149,7 @@ async fn healthz(State(state): State<ServerState>) -> Json<Health> {
     Json(Health {
         status: "ok",
         version: env!("CARGO_PKG_VERSION"),
-        selected_model: get_settings(&state.app).selected_model,
+        selected_model: state.host.settings().selected_model,
         model_loaded: state.transcription.is_model_loaded(),
         backend: state.transcription.current_backend(),
     })
@@ -179,7 +174,7 @@ async fn list_models(
     // history in a way headers do not. The WebSocket accepts one only because a
     // browser cannot set a header on an upgrade.
     check_auth(&state, &headers, None)?;
-    let manager = state.app.state::<Arc<ModelManager>>();
+    let manager = state.host.models();
     let rows: Vec<ModelRow> = manager
         .get_available_models()
         .into_iter()
@@ -237,7 +232,7 @@ async fn transcriptions(
         "text" => text.into_response(),
         "verbose_json" => Json(json!({
             "task": "transcribe",
-            "language": get_settings(&state.app).selected_language,
+            "language": state.host.settings().selected_language,
             "duration": duration,
             "source_sample_rate": source_rate,
             "text": text,
@@ -298,7 +293,7 @@ async fn run_transcription(
     model: Option<&str>,
 ) -> Result<String, ApiError> {
     if let Some(id) = model {
-        let current = get_settings(&state.app).selected_model;
+        let current = state.host.settings().selected_model;
         if id != current {
             // A per-request model swap changes what the hotkey uses too: there
             // is one engine. That is the deliberate trade for not holding two
@@ -313,14 +308,14 @@ async fn run_transcription(
     state.transcription.initiate_model_load();
 
     if state.show_overlay {
-        crate::overlay::show_transcribing_overlay(&state.app);
+        state.host.show_transcribing_overlay();
     }
 
     let tm = state.transcription.clone();
     let result = tauri::async_runtime::spawn_blocking(move || tm.transcribe(samples)).await;
 
     if state.show_overlay {
-        crate::overlay::hide_recording_overlay(&state.app);
+        state.host.hide_recording_overlay();
     }
 
     match result {
@@ -366,10 +361,10 @@ async fn stream(
 ) -> Result<Response, ApiError> {
     check_auth(&state, &headers, params.token.as_deref())?;
 
-    let model_id = get_settings(&state.app).selected_model;
+    let model_id = state.host.settings().selected_model;
     let streams = state
-        .app
-        .state::<Arc<ModelManager>>()
+        .host
+        .models()
         .get_model_info(&model_id)
         .map(|m| m.supports_streaming)
         .unwrap_or(false);
@@ -632,13 +627,13 @@ async fn run_stream(socket: WebSocket, state: ServerState, default_rate: usize, 
     // reads them from too — rather than a second tap inside the engine that
     // could drift from what the UI shows.
     let (partial_tx, mut partial_rx) = tokio::sync::mpsc::unbounded_channel::<StreamTextEvent>();
-    let listener = StreamTextEvent::listen(&state.app, move |event| {
-        let _ = partial_tx.send(event.payload);
-    });
+    let listener = state.host.listen_stream_text(Box::new(move |payload| {
+        let _ = partial_tx.send(payload);
+    }));
 
     state.transcription.start_stream();
     if state.show_overlay {
-        crate::overlay::show_streaming_overlay(&state.app);
+        state.host.show_streaming_overlay();
     }
 
     let mut wire = Wire::new(dialect);
@@ -733,11 +728,11 @@ async fn run_stream(socket: WebSocket, state: ServerState, default_rate: usize, 
         }
     }
 
-    state.app.unlisten(listener);
+    state.host.unlisten(listener);
 
     if commit {
         if state.show_overlay {
-            crate::overlay::show_transcribing_overlay(&state.app);
+            state.host.show_transcribing_overlay();
         }
         let tm = state.transcription.clone();
         let final_text = tauri::async_runtime::spawn_blocking(move || tm.finalize_stream()).await;
@@ -756,7 +751,7 @@ async fn run_stream(socket: WebSocket, state: ServerState, default_rate: usize, 
     }
 
     if state.show_overlay {
-        crate::overlay::hide_recording_overlay(&state.app);
+        state.host.hide_recording_overlay();
     }
     let _ = sink.send(Message::Close(None)).await;
 }

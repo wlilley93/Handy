@@ -72,11 +72,67 @@ impl ServerConfig {
     }
 }
 
+/// What the HTTP layer needs from the application around it.
+///
+/// `ServerState` held a Tauri `AppHandle` directly, which made `router()`
+/// impossible to build outside a running app — so every status path in
+/// `routes.rs` was unreachable by a test, and `guard-coverage` reports 14 of
+/// them as unexercised. This is the seam: production passes the app, a test
+/// passes a fake. `show_overlay` was already half of this admission, since
+/// headless mode has no window.
+pub trait ServerHost: Send + Sync + 'static {
+    fn settings(&self) -> crate::settings::AppSettings;
+    fn models(&self) -> Arc<crate::managers::model::ModelManager>;
+    fn show_transcribing_overlay(&self);
+    fn show_streaming_overlay(&self);
+    fn hide_recording_overlay(&self);
+    /// Returns the listener id to hand back to `unlisten`.
+    fn listen_stream_text(
+        &self,
+        on: Box<dyn Fn(crate::managers::transcription::StreamTextEvent) + Send + Sync + 'static>,
+    ) -> u32;
+    fn unlisten(&self, id: u32);
+}
+
+/// The production host: everything routed through the Tauri app handle.
+pub struct TauriHost(pub AppHandle);
+
+impl ServerHost for TauriHost {
+    fn settings(&self) -> crate::settings::AppSettings {
+        get_settings(&self.0)
+    }
+    fn models(&self) -> Arc<crate::managers::model::ModelManager> {
+        Arc::clone(&self.0.state::<Arc<crate::managers::model::ModelManager>>())
+    }
+    fn show_transcribing_overlay(&self) {
+        crate::overlay::show_transcribing_overlay(&self.0);
+    }
+    fn show_streaming_overlay(&self) {
+        crate::overlay::show_streaming_overlay(&self.0);
+    }
+    fn hide_recording_overlay(&self) {
+        crate::overlay::hide_recording_overlay(&self.0);
+    }
+    fn listen_stream_text(
+        &self,
+        on: Box<dyn Fn(crate::managers::transcription::StreamTextEvent) + Send + Sync + 'static>,
+    ) -> u32 {
+        use tauri_specta::Event;
+        crate::managers::transcription::StreamTextEvent::listen(&self.0, move |event| {
+            on(event.payload)
+        })
+    }
+    fn unlisten(&self, id: u32) {
+        use tauri::Listener;
+        self.0.unlisten(id);
+    }
+}
+
 /// Everything a handler needs. Cloned per request; the expensive parts are
 /// behind `Arc`.
 #[derive(Clone)]
 pub struct ServerState {
-    pub app: AppHandle,
+    pub host: Arc<dyn ServerHost>,
     pub transcription: Arc<TranscriptionManager>,
     pub token: Option<String>,
     /// Drive the recording overlay for server-triggered work. False when the
@@ -140,7 +196,7 @@ pub async fn start(
 
     let transcription = app.state::<Arc<TranscriptionManager>>().inner().clone();
     let state = ServerState {
-        app: app.clone(),
+        host: Arc::new(TauriHost(app.clone())),
         transcription,
         token: config.token.clone(),
         show_overlay,
