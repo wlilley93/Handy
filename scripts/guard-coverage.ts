@@ -113,34 +113,8 @@ function withoutSpecifiers(message: string): string {
  * status codes and never quote the message. A proxy that has been wrong in
  * both directions should not be printing a score.
  */
-const redSource = await Bun.file("scripts/red.ts").text();
+import { GUARDS } from "./red-guards";
 
-/** One red.ts entry: which file it edits, and the source it removes. */
-type RedEntry = { file: string; from: string };
-
-const redEntries: RedEntry[] = [];
-for (const block of redSource.split(/\n  \{\n/).slice(1)) {
-  const file = block.match(/file:\s*"([^"]+)"/)?.[1];
-  const from = block.match(/from:\s*(?:`([\s\S]*?)`|'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)")/);
-  if (!file || !from) continue;
-  const raw = from[1] ?? from[2] ?? from[3] ?? "";
-  redEntries.push({ file, from: raw.replace(/\\n/g, "\n").replace(/\\`/g, "`") });
-}
-
-/**
- * A site is proven when a red.ts entry edits the block it lives in.
- *
- * Textual matching was wrong for the fifth and sixth time: an entry that
- * removes a *condition* (`if !supports_streaming {`) shares no text with the
- * *message* of the refusal it guards, so two new guards moved red.ts from
- * 11/11 to 13/13 while this reported 5/22 either way. The link is positional —
- * the guard opens a block and the refusal sits inside it.
- *
- * The span is the guard's own block, found by brace matching rather than a
- * fixed line window: `if !supports_streaming {` covers every line up to its
- * closing brace, which is exactly the refusal it guards and nothing after it.
- * A guard that opens no block covers only its own lines.
- */
 function blockSpan(source: string, at: number, from: string): number {
   let depth = 0;
   let opened = false;
@@ -159,7 +133,7 @@ function blockSpan(source: string, at: number, from: string): number {
 
 const provenLines = new Map<string, Set<number>>();
 const unlocated: string[] = [];
-for (const entry of redEntries) {
+for (const entry of GUARDS) {
   const source = await Bun.file(entry.file).text().catch(() => "");
   const at = source.indexOf(entry.from);
   if (at === -1) {
@@ -195,11 +169,11 @@ const unproven = sites.filter(site => !proven(site));
 // justify.
 const MUST_PARSE = ["token.is_none()", "8_388_607", "header.or(query)"];
 const blind = MUST_PARSE.filter(
-  fragment => !redEntries.some(entry => entry.from.includes(fragment)),
+  fragment => !GUARDS.some(entry => entry.from.includes(fragment)),
 );
-if (blind.length || redEntries.length < 10 || unlocated.length) {
+if (blind.length || GUARDS.length < 10 || unlocated.length) {
   console.error(
-    `guard-coverage cannot read red.ts: parsed ${redEntries.length} entries` +
+    `guard-coverage cannot use the guard list: parsed ${GUARDS.length} entries` +
     (blind.length ? `, missing ${blind.join(", ")}` : ""),
   );
   for (const entry of unlocated) console.error(`  could not locate  ${entry}`);
