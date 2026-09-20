@@ -21,7 +21,7 @@ import { join } from "node:path";
 
 const DIR = "src-tauri/src/server";
 
-type Site = { file: string; line: number; kind: string; text: string };
+type Site = { file: string; line: number; kind: string; text: string; matchable?: boolean };
 
 function refusals(file: string, source: string): Site[] {
   const out: Site[] = [];
@@ -39,7 +39,19 @@ function refusals(file: string, source: string): Site[] {
     }
     const guard = line.match(/^\s*(?:return (?:false|None);|.*\breturn Err\()/);
     if (guard && !line.includes("//")) {
-      out.push({ file, line: index + 1, kind: "return", text: line.trim().slice(0, 60) });
+      // The message only, never the whole line: the line carries the
+      // constructor's name, and `ApiError::bad_request(...)` normalises to
+      // "bad request", which any test mentioning StatusCode::BAD_REQUEST
+      // matches. That scored every refusal in this family as reached for
+      // free, and moved the figure from 6/22 to 13/22 on four tests.
+      const message = (line.match(/"([^"]{6,})"/) ?? next.match(/"([^"]{6,})"/))?.[1];
+      out.push({
+        file,
+        line: index + 1,
+        kind: "return",
+        text: message ?? line.trim().slice(0, 60),
+        matchable: message !== undefined,
+      });
     }
   });
   return out;
@@ -88,60 +100,58 @@ function withoutSpecifiers(message: string): string {
   return normalise(message.replace(/\{[^}]*\}/g, " "));
 }
 
-const tests = testBodies(sources);
-const normalisedTests = normalise(tests);
+/**
+ * A site is *proven* when `red.ts` has an entry that removes it: that entry has
+ * been watched to make a named test fail, which is evidence rather than a
+ * proxy. Everything else is a worklist.
+ *
+ * The text heuristic that used to score this was wrong in both directions. It
+ * counted `ApiError::bad_request(...)` as reached because the constructor's
+ * own name normalises to "bad request", which any test mentioning
+ * StatusCode::BAD_REQUEST matched — 6/22 became 13/22 on four tests. Narrowing
+ * it to the message then under-counted, because those same tests assert on
+ * status codes and never quote the message. A proxy that has been wrong in
+ * both directions should not be printing a score.
+ */
+const redSource = await Bun.file("scripts/red.ts").text();
+const provenFragments = [...redSource.matchAll(/from:\s*(?:`([\s\S]*?)`|'([^']*)'|"([^"]*)")/g)]
+  .map(match => (match[1] ?? match[2] ?? match[3] ?? "").replace(/\\n/g, "\n"))
+  .filter(Boolean);
+
+function proven(site: Site): boolean {
+  return provenFragments.some(fragment =>
+    site.text.length > 6 && fragment.includes(site.text)
+  );
+}
+
 const sites: Site[] = [];
 for (const [name, source] of sources) {
   const production = productionOnly(name, source);
   if (production !== null) sites.push(...refusals(name, production));
 }
 
-// A distinctive fragment of the message: the first few words, which is what a
-// test assertion tends to quote.
-function reached(site: Site): boolean {
-  if (site.kind === "status") return tests.includes(site.text);
-  // Any three-word window, not the opening words: a test asserts on the
-  // distinctive fragment ("without a token", "longer than the"), which is
-  // rarely the start of the sentence. Taking only the first words scored
-  // every guard in this module as unreached, including five that red.ts
-  // proves are tested — a result too extreme to be true, which is what gave
-  // the heuristic away.
-  const words = withoutSpecifiers(site.text).split(" ").filter(Boolean);
-  for (const size of [3, 2]) {
-    for (let i = 0; i + size <= words.length; i++) {
-      const window = words.slice(i, i + size).join(" ");
-      if (window.length > 8 && normalisedTests.includes(window)) return true;
-    }
-  }
-  return false;
-}
+const unproven = sites.filter(site => !proven(site));
 
-const unreached = sites.filter(site => !reached(site));
-const reachedSites = sites.filter(site => reached(site));
-
-// A heuristic that quietly returns zero is worse than no heuristic. Three
-// versions of this reported 0/21, 0/22 and 2/22 before it worked, and the only
-// thing that caught them was knowing these guards are tested — `red.ts` proves
-// each of them by deleting it and watching the named test fail. So the tool
-// asserts its own floor: if it can no longer see these, it is broken, not the
-// module.
-const MUST_BE_REACHED = [
-  "without a token",
-  "longer than",
-  "sample_rate must be",
-];
-const blind = MUST_BE_REACHED.filter(
-  fragment => !reachedSites.some(site => site.text.includes(fragment)),
+// The floor. These are `from:` sources in red.ts, not messages — the earlier
+// version of this check used message fragments and fired immediately, which
+// is the check working: it refused to score against a parse it could not
+// justify.
+const MUST_PARSE = ["token.is_none()", "8_388_607", "header.or(query)"];
+const blind = MUST_PARSE.filter(
+  fragment => !provenFragments.some(source => source.includes(fragment)),
 );
-if (blind.length) {
-  console.error("guard-coverage is broken: it cannot see guards red.ts proves are tested:");
-  for (const fragment of blind) console.error(`  ${fragment}`);
+if (blind.length || provenFragments.length < 5) {
+  console.error(
+    `guard-coverage cannot read red.ts: parsed ${provenFragments.length} entries` +
+    (blind.length ? `, missing ${blind.join(", ")}` : ""),
+  );
   process.exit(2);
 }
 
-for (const site of unreached) {
+for (const site of unproven) {
   console.log(`  ?     ${site.file}:${site.line}  ${site.kind}  ${site.text}`);
 }
 console.log(
-  `\n${reachedSites.length}/${sites.length} refusal sites are mentioned by a test`,
+  `\n${sites.length - unproven.length}/${sites.length} refusal sites have a red.ts guard` +
+  `\n${unproven.length} are a worklist, not a failure — a site may well be tested without one.`,
 );
