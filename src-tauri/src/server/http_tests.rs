@@ -528,3 +528,72 @@ async fn a_malformed_multipart_body_is_refused() {
         String::from_utf8_lossy(&body)
     );
 }
+
+/// An engine that panics. `spawn_blocking` turns a panic into a join error,
+/// which is the second of `run_transcription`'s two 500s and the only one no
+/// ordinary failure reaches.
+struct PanickingTranscriber;
+
+impl Transcriber for PanickingTranscriber {
+    fn is_model_loaded(&self) -> bool {
+        true
+    }
+    fn initiate_model_load(&self) {}
+    fn current_backend(&self) -> Option<String> {
+        None
+    }
+    fn stream_router(&self) -> Arc<StreamRouter> {
+        unimplemented!("no test here opens a stream")
+    }
+    fn start_stream(&self) {}
+    fn cancel_stream(&self) {}
+    fn finalize_stream(&self) -> anyhow::Result<Option<String>> {
+        Ok(None)
+    }
+    fn transcribe(&self, _audio: Vec<f32>) -> anyhow::Result<String> {
+        panic!("the engine hit an assertion");
+    }
+    fn load_model(&self, _model_id: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn an_engine_panic_is_a_500_and_not_a_hang() {
+    // A panic inside `spawn_blocking` does not propagate; the JoinHandle
+    // resolves to an error. Without the `Err(e)` arm the request would hang
+    // or unwrap-panic the server thread instead of answering.
+    let (state, host) = state_watching_overlay(Arc::new(PanickingTranscriber));
+    let wav = tiny_wav();
+    assert_eq!(
+        send(state, upload(&[("file", Some(&wav))])).await,
+        StatusCode::INTERNAL_SERVER_ERROR
+    );
+    // And the overlay still pairs: a panicked engine must not leave it up.
+    assert_eq!(*host.overlay.lock().unwrap(), vec!["transcribing", "hide"]);
+}
+
+#[tokio::test]
+async fn waiting_for_a_model_that_never_loads_gives_up() {
+    // The constant is 90 seconds, which is right for a cold Metal load and
+    // impossible to test against. The limit is a parameter, so the behaviour
+    // is reachable at millisecond scale — the number is a policy choice, the
+    // giving-up is the code.
+    let (state, _host) = state_watching_overlay(Arc::new(IdleTranscriber));
+    let started = std::time::Instant::now();
+    let loaded = super::routes::wait_for_model(&state, std::time::Duration::from_millis(250)).await;
+    assert!(!loaded, "an engine that never loads must not report loaded");
+    assert!(
+        started.elapsed() >= std::time::Duration::from_millis(250),
+        "gave up before the limit: {:?}",
+        started.elapsed()
+    );
+}
+
+#[tokio::test]
+async fn waiting_for_a_model_that_is_loaded_returns_at_once() {
+    let (state, _host) = state_watching_overlay(Arc::new(FailingTranscriber));
+    let started = std::time::Instant::now();
+    assert!(super::routes::wait_for_model(&state, std::time::Duration::from_secs(30)).await);
+    assert!(started.elapsed() < std::time::Duration::from_secs(1));
+}

@@ -421,7 +421,7 @@ const MODEL_LOAD_WAIT: std::time::Duration = std::time::Duration::from_secs(90);
 /// Polling rather than a condvar because `TranscriptionManager` exposes the
 /// loading state as a bool, and reaching into its internals from the server
 /// would couple the two; the wait happens once per session, off the hot path.
-async fn wait_for_model(state: &ServerState, limit: std::time::Duration) -> bool {
+pub(super) async fn wait_for_model(state: &ServerState, limit: std::time::Duration) -> bool {
     let deadline = std::time::Instant::now() + limit;
     loop {
         if state.transcription.is_model_loaded() {

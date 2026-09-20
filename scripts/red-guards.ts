@@ -158,4 +158,21 @@ export const GUARDS: Guard[] = [
     to: '            Err(_e) => break,',
     expect: "a_malformed_multipart_body_is_refused",
   },
+  {
+    name: "a panicked engine is a 500, not an empty 200",
+    file: "src-tauri/src/server/routes.rs",
+    from: '        Err(e) => Err(ApiError::new(\n            StatusCode::INTERNAL_SERVER_ERROR,\n            format!("transcription task did not finish: {e}"),\n        )),',
+    to: '        Err(_e) => Ok(String::new()),',
+    expect: "an_engine_panic_is_a_500_and_not_a_hang",
+  },
+  {
+    name: "waiting for a model respects its limit",
+    file: "src-tauri/src/server/routes.rs",
+    // Breaks by giving up immediately, not by never giving up: a break that
+    // loops forever wedges the runner with the guard still removed, which is
+    // exactly the state the lock exists to make visible rather than to cause.
+    from: "    let deadline = std::time::Instant::now() + limit;",
+    to: "    let deadline = std::time::Instant::now();",
+    expect: "waiting_for_a_model_that_never_loads_gives_up",
+  },
 ];

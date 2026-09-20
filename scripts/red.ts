@@ -18,9 +18,34 @@ import { GUARDS, type Guard } from "./red-guards";
 
 
 
+/**
+ * A suite run with a wall-clock limit.
+ *
+ * A break can make the code loop rather than fail — removing the deadline
+ * check in `wait_for_model` does exactly that — and without a timeout the
+ * runner waits forever holding the lock, with the guard still removed. That
+ * happened once while writing these. A timeout counts as a failure, which is
+ * the right answer: the guard was noticed, just not by returning.
+ */
+const SUITE_TIMEOUT_MS = 120_000;
+
 async function runSuite(): Promise<{ ok: boolean; output: string }> {
-  const done = await $`cargo test --lib server::`.cwd("src-tauri").nothrow().quiet();
-  return { ok: done.exitCode === 0, output: done.stdout.toString() + done.stderr.toString() };
+  const proc = Bun.spawn(["cargo", "test", "--lib", "server::"], {
+    cwd: "src-tauri",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const timer = setTimeout(() => proc.kill(), SUITE_TIMEOUT_MS);
+  try {
+    const [out, err] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+    const code = await proc.exited;
+    return { ok: code === 0, output: out + err + (code === null ? "\n(timed out)" : "") };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**
