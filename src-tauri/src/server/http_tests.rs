@@ -481,3 +481,50 @@ async fn the_overlay_pairs_on_the_success_path_too() {
     );
     assert_eq!(*host.overlay.lock().unwrap(), vec!["transcribing", "hide"]);
 }
+
+#[tokio::test]
+async fn an_unknown_response_format_is_refused() {
+    // Checked after transcription succeeds, so it needs an engine that
+    // answers — the refusal is about how to render the result, not whether
+    // one exists.
+    let (state, _host) = state_watching_overlay(Arc::new(IdleTranscriber));
+    let wav = tiny_wav();
+    let (content_type, mut body) = multipart(&[("file", Some(&wav))]);
+    body.truncate(body.len() - "--testboundary--\r\n".len());
+    body.extend_from_slice(b"--testboundary\r\n");
+    body.extend_from_slice(
+        b"Content-Disposition: form-data; name=\"response_format\"\r\n\r\nsrt\r\n",
+    );
+    body.extend_from_slice(b"--testboundary--\r\n");
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/audio/transcriptions")
+        .header("content-type", content_type)
+        .body(Body::from(body))
+        .unwrap();
+    assert_eq!(send(state, request).await, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn a_malformed_multipart_body_is_refused() {
+    // The declared boundary is not the one in the body, so the parser errors
+    // partway rather than finding nothing. A truncated upload looks like this.
+    //
+    // Asserting the message, not just the status: replacing this branch with
+    // `break` also yields 400, from the "no `file` field" refusal further
+    // down, so a status-only assertion stayed green with the branch deleted.
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/audio/transcriptions")
+        .header("content-type", "multipart/form-data; boundary=declared")
+        .body(Body::from("--actual\r\nContent-Disposition: form-data; name=\"file\"\r\n\r\nx\r\n--actual--\r\n"))
+        .unwrap();
+    let response = router(state(None)).oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+    assert!(
+        String::from_utf8_lossy(&body).contains("could not read the multipart body"),
+        "landed on a different refusal: {}",
+        String::from_utf8_lossy(&body)
+    );
+}

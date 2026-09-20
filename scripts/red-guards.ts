@@ -142,4 +142,20 @@ export const GUARDS: Guard[] = [
     to: `        Ok(Err(_e)) => Ok(String::new()),\n        #[allow(unreachable_patterns)]\n        Ok(Err(e)) => Err(ApiError::new(`,
     expect: "an_engine_failure_is_a_500",
   },
+  {
+    name: "an unknown response_format is refused, not silently json",
+    file: "src-tauri/src/server/routes.rs",
+    // Single-quoted: the Rust source contains `${other}` and backticks, both
+    // of which a template literal would try to interpret.
+    from: '        other => {\n            return Err(ApiError::bad_request(format!(\n                "unsupported response_format `{other}` (use json, text or verbose_json)"\n            )))\n        }',
+    to: '        _other => Json(json!({ "text": text })).into_response(),',
+    expect: "an_unknown_response_format_is_refused",
+  },
+  {
+    name: "a multipart read error is reported, not swallowed",
+    file: "src-tauri/src/server/routes.rs",
+    from: '            Err(e) => {\n                return Err(ApiError::bad_request(format!(\n                    "could not read the multipart body: {e}"\n                )))\n            }',
+    to: '            Err(_e) => break,',
+    expect: "a_malformed_multipart_body_is_refused",
+  },
 ];

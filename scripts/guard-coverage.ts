@@ -155,11 +155,55 @@ function proven(site: Site): boolean {
   return provenLines.get(site.file)?.has(site.line) ?? false;
 }
 
-const sites: Site[] = [];
+/**
+ * Sites that are not worth a guard, each with the reason.
+ *
+ * Without this the count mixes real work with noise, and a figure that reads
+ * worse than the situation gets ignored. The sibling repo waives its request
+ * lifecycle the same way; these are the two kinds here.
+ *
+ * `constructors`: the status codes inside `ApiError`'s own `bad_request` and
+ * `unauthorized`. They are where an error is *built*, not where one is
+ * *decided* — every call site that decides is counted separately, and
+ * guarding these would test a constructor.
+ *
+ * `unreachable`: refusals with no reachable input, kept as defence. The
+ * zero-channel bail never fires because hound rejects such a file while
+ * parsing; it stays because `downmix` divides by the channel count. Proven
+ * by red.ts: removing it made nothing fail.
+ */
+const UNREACHABLE: Record<string, string> = {
+  "WAV declares zero channels":
+    "hound refuses a zero-channel file while parsing; kept as defence for downmix",
+};
+
+/** The line range of `impl ApiError { ... }`, if the file has one. */
+function constructorRange(source: string): [number, number] | null {
+  const at = source.indexOf("impl ApiError {");
+  if (at === -1) return null;
+  const start = source.slice(0, at).split("\n").length;
+  const end = source.slice(0, blockSpan(source, at, "impl ApiError {")).split("\n").length;
+  return [start, end];
+}
+
+const allSites: Site[] = [];
+const waived: Array<{ site: Site; reason: string }> = [];
 for (const [name, source] of sources) {
   const production = productionOnly(name, source);
-  if (production !== null) sites.push(...refusals(name, production));
+  if (production === null) continue;
+  const ctor = constructorRange(production);
+  for (const site of refusals(name, production)) {
+    const unreachable = UNREACHABLE[site.text];
+    if (unreachable) {
+      waived.push({ site, reason: unreachable });
+    } else if (ctor && site.line >= ctor[0] && site.line <= ctor[1]) {
+      waived.push({ site, reason: "inside ApiError's own constructors" });
+    } else {
+      allSites.push(site);
+    }
+  }
 }
+const sites = allSites;
 
 const unproven = sites.filter(site => !proven(site));
 
@@ -185,5 +229,7 @@ for (const site of unproven) {
 }
 console.log(
   `\n${sites.length - unproven.length}/${sites.length} refusal sites have a red.ts guard` +
-  `\n${unproven.length} are a worklist, not a failure — a site may well be tested without one.`,
+  `\n${unproven.length} are a worklist, not a failure — a site may well be tested without one.` +
+  `\n${waived.length} waived: ` +
+  [...new Set(waived.map(w => w.reason))].join("; ") + ".",
 );
