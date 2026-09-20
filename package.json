@@ -19,6 +19,7 @@
     "test:playwright:ui": "playwright test --ui",
     "test:rust": "cd src-tauri && cargo test",
     "test:red": "bun scripts/red.ts",
+    "test:guards": "bun scripts/guard-coverage.ts",
     "lint:rust": "cd src-tauri && cargo clippy --all-targets",
     "check": "bun run lint && bun run lint:rust && bun run test:rust",
     "check:translations": "bun scripts/check-translations.ts",
