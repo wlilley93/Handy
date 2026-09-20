@@ -58,6 +58,8 @@ env_filter = "0.1.0"
 tokio = "1.43.0"
 # Local transcription API (src/server). axum brings its own hyper/tower; the
 # feature list is deliberately narrow — no TLS, no compression, no tracing.
+# base64 carries PCM16 inside the OpenCodex dictation dialect's JSON frames.
+base64 = "0.22"
 axum = { version = "0.8", default-features = false, features = [
   "http1",
   "json",

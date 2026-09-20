@@ -67,6 +67,32 @@ endpoint.
 - Send `{"type":"commit"}` (or just close) to finish. The server replies
   `{"type":"final","text":"…"}` and closes.
 
+If the engine is not resident the socket waits for it (up to 90s) rather than
+refusing. The model unloads on a timer, so "not loaded" is the ordinary state
+between dictations, not a fault.
+
+#### Codex dictation dialect
+
+Add `?dialect=codex` and the same socket speaks OpenCodex's streaming-dictation
+extension instead, so Handy can be used directly as an OpenCodex dictation
+backend (`providers.<name>.dictationUrl`). OpenCodex relays dictation frames
+verbatim, so the backend has to speak this itself — there is no translating
+proxy in between.
+
+- Client sends `{"type":"session.start","config":{…,"sample_rate_hz":48000,…}}`;
+  the server answers `{"type":"session.started","session":{"id":…}}`.
+- Audio arrives as `{"type":"audio.append","audio":"<base64 PCM16>"}` — JSON
+  text frames, not binary ones.
+- Partials come back as `transcript.segment` with `utterance_id`, `revision`
+  and `text`. A higher revision **replaces** the previous text for that
+  utterance; do not concatenate.
+- `{"type":"session.close"}` yields `transcript.final` then
+  `{"type":"session.updated","session":{"status":"closed"}}`.
+
+The dialect is stated in the URL rather than sniffed, because the two disagree
+about who speaks first: a native client waits for `ready` on connect, a Codex
+client sends `session.start` and waits for `session.started`.
+
 ## Settings
 
 | Setting | Default | Notes |
