@@ -152,6 +152,39 @@ async function runSuite(): Promise<{ ok: boolean; output: string }> {
   return { ok: done.exitCode === 0, output: done.stdout.toString() + done.stderr.toString() };
 }
 
+/**
+ * A lock, held while any guard is removed.
+ *
+ * This tool disables production code for a few seconds at a time, and a
+ * `git add -A` during that window commits the disabled guard. That is not
+ * hypothetical: commit 68251d9 shipped `if false` in place of the audio
+ * length limit, because a `bun run check` was running in the background
+ * while the commit was made. A check must not be able to do the damage it
+ * is looking for.
+ */
+const LOCK = ".red-running";
+
+function releaseLock() {
+  try {
+    require("node:fs").unlinkSync(LOCK);
+  } catch {
+    // already gone
+  }
+}
+
+if (await Bun.file(LOCK).exists()) {
+  console.error(`${LOCK} exists — another red run is in flight, or one died mid-break.`);
+  console.error("Check `git status` before deleting it: a guard may still be disabled.");
+  process.exit(2);
+}
+await Bun.write(LOCK, `${process.pid}\n`);
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+  process.on(signal, () => {
+    releaseLock();
+    process.exit(130);
+  });
+}
+
 const misses: string[] = [];
 
 for (const guard of GUARDS) {
@@ -174,6 +207,7 @@ for (const guard of GUARDS) {
 }
 
 const { ok, output } = await runSuite();
+releaseLock();
 if (!ok) {
   console.log("restore failed — the suite is red with the original source\n" + output);
   process.exit(1);
