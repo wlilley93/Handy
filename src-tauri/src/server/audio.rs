@@ -186,6 +186,32 @@ mod tests {
     }
 
     #[test]
+    fn scales_24_bit_by_the_sample_width_not_the_container() {
+        // i24 arrives in an i32 container, and dividing by i32::MAX instead of
+        // 2^23-1 attenuates everything by 256 — audio that still decodes, still
+        // transcribes, and is simply too quiet to hear. Nothing else in here
+        // would fail if that constant were wrong.
+        let spec = WavSpec {
+            channels: 1,
+            sample_rate: 16_000,
+            bits_per_sample: 24,
+            sample_format: SampleFormat::Int,
+        };
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut w = WavWriter::new(&mut buf, spec).unwrap();
+            for s in [8_388_607i32, -8_388_607, 0] {
+                w.write_sample(s).unwrap();
+            }
+            w.finalize().unwrap();
+        }
+        let (out, rate) = decode_wav(&buf.into_inner()).unwrap();
+        assert_eq!(rate, 16_000);
+        assert!((out[0] - 1.0).abs() < 0.001, "full scale decoded as {}", out[0]);
+        assert!((out[1] + 1.0).abs() < 0.001, "full negative decoded as {}", out[1]);
+    }
+
+    #[test]
     fn rejects_non_wav() {
         assert!(decode_wav(b"ID3\x04\x00not actually a wav").is_err());
     }
