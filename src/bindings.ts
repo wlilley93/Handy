@@ -688,6 +688,23 @@ async getCurrentModel() : Promise<Result<string, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+async getServerStatus() : Promise<ServerStatus> {
+    return await TAURI_INVOKE("get_server_status");
+},
+/**
+ * Write the server settings and bring the listener into line with them.
+ * 
+ * Returns the bound address on success. An error leaves the settings written
+ * but the server down, and `get_server_status` will report exactly that.
+ */
+async setServerSettings(enabled: boolean, port: number, token: string | null, allowLan: boolean) : Promise<Result<string | null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_server_settings", { enabled, port, token, allowLan }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async getTranscriptionModelStatus() : Promise<Result<string | null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_transcription_model_status") };
@@ -1004,7 +1021,23 @@ vad_backend?: VadBackend;
  * not gated on this — that follows model capability. Migrated from the old
  * `overlay_position` (position `none` → style `None`).
  */
-overlay_style?: OverlayStyle }
+overlay_style?: OverlayStyle; 
+/**
+ * Serve the local HTTP transcription API. Off by default: turning it on
+ * opens a port, so it is the user's decision, never a migration's.
+ */
+server_enabled?: boolean; server_port?: number; 
+/**
+ * Bearer token required by the API. Always required when `server_allow_lan`
+ * is on; optional on loopback, where the OS already limits callers to
+ * processes on this machine.
+ */
+server_token?: string | null; 
+/**
+ * Bind 0.0.0.0 instead of 127.0.0.1. Refused without a token — an open
+ * port with no auth is a microphone-grade capability handed to the LAN.
+ */
+server_allow_lan?: boolean }
 export type AudioDevice = { index: string; name: string; is_default: boolean }
 export type AutoSubmitKey = "enter" | "ctrl_enter" | "cmd_enter"
 export type AvailableAccelerators = { transcribe: string[]; ort: string[]; gpu_devices: GpuDeviceOption[] }
@@ -1111,6 +1144,13 @@ uncovered_bindings: string[];
  * warning banner appears and explains why recording refused.
  */
 recorder_blocked: boolean }
+export type ServerStatus = { enabled: boolean; running: boolean; 
+/**
+ * The address actually bound, once running. Not derived from the settings:
+ * a port collision means the setting and the socket differ, and the UI
+ * should show what is true.
+ */
+address: string | null; port: number; has_token: boolean; allow_lan: boolean }
 /**
  * How the transcribe shortcut's key events drive a recording.
  */
