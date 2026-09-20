@@ -147,3 +147,97 @@ async fn an_unknown_path_is_not_found_rather_than_unauthorized() {
         StatusCode::NOT_FOUND
     );
 }
+
+/// A multipart body with the given parts. Hand-rolled because the point is to
+/// exercise the server's own parsing, not a client library's.
+fn multipart(parts: &[(&str, Option<&[u8]>)]) -> (String, Vec<u8>) {
+    let boundary = "testboundary";
+    let mut body = Vec::new();
+    for (name, content) in parts {
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        match content {
+            Some(bytes) => {
+                body.extend_from_slice(
+                    format!(
+                        "Content-Disposition: form-data; name=\"{name}\"; filename=\"a.wav\"\r\n\r\n"
+                    )
+                    .as_bytes(),
+                );
+                body.extend_from_slice(bytes);
+            }
+            None => {
+                body.extend_from_slice(
+                    format!("Content-Disposition: form-data; name=\"{name}\"\r\n\r\n").as_bytes(),
+                );
+            }
+        }
+        body.extend_from_slice(b"\r\n");
+    }
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    (format!("multipart/form-data; boundary={boundary}"), body)
+}
+
+fn upload(parts: &[(&str, Option<&[u8]>)]) -> Request<Body> {
+    let (content_type, body) = multipart(parts);
+    Request::builder()
+        .method("POST")
+        .uri("/v1/audio/transcriptions")
+        .header("content-type", content_type)
+        .body(Body::from(body))
+        .unwrap()
+}
+
+#[tokio::test]
+async fn an_upload_with_no_file_part_is_a_bad_request() {
+    assert_eq!(
+        send(state(None), upload(&[("model", None)])).await,
+        StatusCode::BAD_REQUEST
+    );
+}
+
+#[tokio::test]
+async fn an_empty_file_is_a_bad_request() {
+    assert_eq!(
+        send(state(None), upload(&[("file", Some(b""))])).await,
+        StatusCode::BAD_REQUEST
+    );
+}
+
+#[tokio::test]
+async fn a_non_wav_upload_is_unsupported_media_type() {
+    // The common case is an mp3 or m4a, which decodes as "not a readable WAV".
+    // 415 rather than 400 so the client learns the format is the problem.
+    assert_eq!(
+        send(state(None), upload(&[("file", Some(b"ID3\x04\x00not actually a wav"))])).await,
+        StatusCode::UNSUPPORTED_MEDIA_TYPE
+    );
+}
+
+#[tokio::test]
+async fn a_wav_with_no_audio_is_a_bad_request() {
+    // A valid, well-formed header describing zero frames: it decodes cleanly
+    // and yields nothing, which is a different failure from a bad container.
+    let wav = wav_header_with_no_frames();
+    assert_eq!(
+        send(state(None), upload(&[("file", Some(&wav))])).await,
+        StatusCode::BAD_REQUEST
+    );
+}
+
+/// 44 bytes of RIFF header declaring 16 kHz mono 16-bit and no data.
+fn wav_header_with_no_frames() -> Vec<u8> {
+    let mut wav = Vec::new();
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&36u32.to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    wav.extend_from_slice(&1u16.to_le_bytes()); // mono
+    wav.extend_from_slice(&16_000u32.to_le_bytes());
+    wav.extend_from_slice(&32_000u32.to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes());
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&0u32.to_le_bytes());
+    wav
+}

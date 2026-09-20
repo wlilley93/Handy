@@ -66,6 +66,29 @@ const GUARDS: Guard[] = [
     to: `    let _ = (header, query, expected);\n    true`,
     expect: "a_missing_token_is_refused_on_the_model_list",
   },
+  {
+    name: "an empty file part is refused before decoding",
+    file: "src-tauri/src/server/routes.rs",
+    // Single-quoted: the Rust source contains backticks, which a template
+    // literal would end.
+    from: '    if bytes.is_empty() {\n        return Err(ApiError::bad_request("`file` is empty"));\n    }\n',
+    to: "",
+    expect: "an_empty_file_is_a_bad_request",
+  },
+  {
+    name: "a non-WAV upload is 415, not 400",
+    file: "src-tauri/src/server/routes.rs",
+    from: `            StatusCode::UNSUPPORTED_MEDIA_TYPE,`,
+    to: `            StatusCode::BAD_REQUEST,`,
+    expect: "a_non_wav_upload_is_unsupported_media_type",
+  },
+  {
+    name: "audio that decodes to nothing is refused",
+    file: "src-tauri/src/server/routes.rs",
+    from: `    if samples.is_empty() {\n        return Err(ApiError::bad_request("decoded audio contains no samples"));\n    }\n`,
+    to: "",
+    expect: "a_wav_with_no_audio_is_a_bad_request",
+  },
 ];
 
 async function runSuite(): Promise<{ ok: boolean; output: string }> {
