@@ -89,6 +89,20 @@ const GUARDS: Guard[] = [
     to: "",
     expect: "a_wav_with_no_audio_is_a_bad_request",
   },
+  {
+    name: "audio longer than the limit is refused",
+    file: "src-tauri/src/server/audio.rs",
+    from: "    if secs > MAX_AUDIO_SECS {",
+    to: "    if false {",
+    expect: "rejects_audio_over_the_length_limit",
+  },
+  {
+    name: "a PCM16 payload with an odd byte count is refused",
+    file: "src-tauri/src/server/audio.rs",
+    from: "    if !bytes.len().is_multiple_of(2) {",
+    to: "    if false {",
+    expect: "rejects_odd_length_pcm16",
+  },
 ];
 
 async function runSuite(): Promise<{ ok: boolean; output: string }> {

@@ -37,6 +37,10 @@ pub fn decode_wav(bytes: &[u8]) -> Result<(Vec<f32>, u32)> {
         .map_err(|e| anyhow!("not a readable WAV file: {}", e))?;
     let spec = reader.spec();
 
+    // Defensive: `hound` rejects a zero-channel file while parsing, so this
+    // has no reachable input today. It stays because `downmix` divides by the
+    // channel count, and the day someone swaps the parser it is the line that
+    // keeps that from being a panic.
     if spec.channels == 0 {
         bail!("WAV declares zero channels");
     }
@@ -209,6 +213,64 @@ mod tests {
         assert_eq!(rate, 16_000);
         assert!((out[0] - 1.0).abs() < 0.001, "full scale decoded as {}", out[0]);
         assert!((out[1] + 1.0).abs() < 0.001, "full negative decoded as {}", out[1]);
+    }
+
+    /// A RIFF header built by hand, so the fields a writer would refuse to
+    /// emit can be tested. `data` is declared empty unless `frames` says
+    /// otherwise.
+    fn wav_header(channels: u16, bits: u16, format_tag: u16, data_bytes: u32) -> Vec<u8> {
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + data_bytes).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&format_tag.to_le_bytes());
+        wav.extend_from_slice(&channels.to_le_bytes());
+        wav.extend_from_slice(&16_000u32.to_le_bytes());
+        wav.extend_from_slice(&32_000u32.to_le_bytes());
+        wav.extend_from_slice(&2u16.to_le_bytes());
+        wav.extend_from_slice(&bits.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data_bytes.to_le_bytes());
+        wav.resize(wav.len() + data_bytes as usize, 0);
+        wav
+    }
+
+    #[test]
+    fn rejects_zero_channels() {
+        // `hound` refuses this while parsing, so the module's own
+        // `WAV declares zero channels` never fires — and hound's message
+        // happens to contain the same phrase, so asserting on it passed for
+        // the wrong reason until red.ts removed the bail and nothing failed.
+        // Asserting on hound's wording, which is what a caller sees.
+        let err = decode_wav(&wav_header(0, 16, 1, 0)).unwrap_err().to_string();
+        assert!(err.contains("Ill-formed WAVE file"), "got: {}", err);
+        assert!(err.contains("zero channels"), "got: {}", err);
+    }
+
+    #[test]
+    fn rejects_a_bit_depth_the_engines_cannot_use() {
+        // 12-bit PCM is legal WAV. `hound` refuses it while parsing, so the
+        // caller sees "not a readable WAV" rather than this module's
+        // `unsupported WAV sample format` arm — which is worth knowing,
+        // because that arm turns out to be defensive rather than reachable:
+        // the formats `read_samples` matches are exactly the ones hound
+        // decodes. Asserting the message the client actually gets.
+        let err = decode_wav(&wav_header(1, 12, 1, 0)).unwrap_err().to_string();
+        assert!(err.contains("not a readable WAV"), "got: {}", err);
+    }
+
+    #[test]
+    fn rejects_64_bit_float() {
+        // The other direction: a format tag hound may parse but the match in
+        // `read_samples` does not cover. Either refusal is correct; what must
+        // not happen is a panic or silent garbage.
+        let err = decode_wav(&wav_header(1, 64, 3, 0)).unwrap_err().to_string();
+        assert!(
+            err.contains("unsupported WAV sample format") || err.contains("not a readable WAV"),
+            "got: {}",
+            err
+        );
     }
 
     #[test]
