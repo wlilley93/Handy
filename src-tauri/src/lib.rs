@@ -138,15 +138,29 @@ fn show_main_window(app: &AppHandle) {
 /// Mirrors the show-window decision in `setup`: the app launches without a
 /// Dock icon only when it will start hidden (setting or `--start-hidden`) AND a
 /// tray icon is available (setting and not `--no-tray`). With no tray the Dock
-/// icon stays as the only way back into the app (#903). Headless one-shot
-/// runs are left alone.
+/// icon stays as the only way back into the app (#903).
+///
+/// `--serve` is the exception to both rules. It is headless like the one-shot
+/// modes, but unlike them it never exits: no window, no tray, no overlay and
+/// no shortcut for the life of the process, so a Dock tile for it is a tile
+/// that cannot be clicked into anything, for as long as the machine is up. It
+/// launches as Accessory. The one-shot headless runs (`--transcribe-file`,
+/// `--list-devices`, `--list-models`) are gone in under a second and are left
+/// alone.
 #[cfg(target_os = "macos")]
 fn apply_startup_activation_policy(app: &mut tauri::App, headless_mode: bool) {
+    let cli_args = app.state::<CliArgs>().inner().clone();
+
+    if cli_args.serve {
+        log::info!("--serve: no window or tray for the life of the process, launching as Accessory (no Dock icon)");
+        app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+        return;
+    }
+
     if headless_mode {
         return;
     }
 
-    let cli_args = app.state::<CliArgs>().inner().clone();
     let settings = settings::get_settings(app.handle());
 
     let should_hide = settings.start_hidden || cli_args.start_hidden;
